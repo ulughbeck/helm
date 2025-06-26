@@ -52,20 +52,26 @@ class _AppState extends State<App> {
       routes: Routes.values,
       guards: [
         // show not found page if no route found
-        // (pages) => pages.isEmpty ? [Routes.notFound.page()] : pages,
+        (pages) => pages.isEmpty ? [Routes.notFound.page()] : pages,
         // ensure home is always first route
-        // (pages) {
-        //   if (pages.isNotEmpty && pages.first.name != Routes.home.path) {
-        //     return [Routes.home.page(), ...pages];
-        //   }
-        //   return pages;
-        // },
+        (pages) {
+          if (pages.isNotEmpty && pages.first.name != Routes.home.path) {
+            return [Routes.home.page(), ...pages];
+          }
+          return pages;
+        },
       ],
     );
   }
 
   @override
   Widget build(BuildContext context) => MaterialApp.router(routerConfig: router);
+}
+
+class NotFoundScreen extends StatelessWidget {
+  const NotFoundScreen({super.key});
+  @override
+  Widget build(BuildContext context) => Scaffold(appBar: AppBar(title: const Text('404 Not Found')));
 }
 
 class HomeScreen extends StatelessWidget {
@@ -97,6 +103,12 @@ class HomeScreen extends StatelessWidget {
           ]),
         ),
       );
+}
+
+class SettingsScreen extends StatelessWidget {
+  const SettingsScreen({super.key});
+  @override
+  Widget build(BuildContext context) => Scaffold(appBar: AppBar(title: const Text('Settings')));
 }
 
 class ShopScreen extends StatelessWidget {
@@ -161,24 +173,28 @@ class CategoryScreen extends StatelessWidget {
 class ProductsScreen extends StatelessWidget {
   const ProductsScreen({super.key});
   @override
-  Widget build(BuildContext context) => Scaffold(appBar: AppBar(title: const Text('Products')));
-}
-
-class SettingsScreen extends StatelessWidget {
-  const SettingsScreen({super.key});
-  @override
-  Widget build(BuildContext context) => Scaffold(appBar: AppBar(title: const Text('Settings')));
+  Widget build(BuildContext context) => Scaffold(
+        appBar: AppBar(title: const Text('Products')),
+        body: Center(
+          child: ElevatedButton(
+            onPressed: () => HelmRouter.push(context, Routes.product, pathParams: {'id': '123'}),
+            child: const Text('Push Product 123'),
+          ),
+        ),
+      );
 }
 
 class ProductScreen extends StatelessWidget {
   const ProductScreen({required this.productId, super.key});
   final String productId;
   @override
-  Widget build(BuildContext context) => Scaffold(appBar: AppBar(title: Text('Product: $productId')));
-}
-
-class NotFoundScreen extends StatelessWidget {
-  const NotFoundScreen({super.key});
-  @override
-  Widget build(BuildContext context) => Scaffold(appBar: AppBar(title: const Text('404 Not Found')));
+  Widget build(BuildContext context) => Scaffold(
+        appBar: AppBar(title: Text('Product: $productId')),
+        body: Center(
+          child: ElevatedButton(
+            onPressed: () => HelmRouter.push(context, Routes.product, pathParams: {'id': '321'}),
+            child: const Text('Push Product 321'),
+          ),
+        ),
+      );
 }

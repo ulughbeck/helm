@@ -28,18 +28,25 @@ class HelmRouterDelegate extends RouterDelegate<NavigationState>
   final _PerRouteTransitionDelegate _transitionDelegate;
   final HelmRouteParser routeParser;
 
-  NavigationState _pages = [];
+  NavigationState _pages = const [];
 
   @override
   final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
   @override
-  NavigationState get currentConfiguration => UnmodifiableListView(_pages);
+  NavigationState get currentConfiguration => _pages;
 
-  NavigationState _applyGuards(NavigationState pages) => guards.fold(pages, (current, guard) => guard(current));
+  NavigationState _applyGuards(NavigationState pages) {
+    if (guards.isEmpty) return pages;
+    var current = pages;
+    for (final guard in guards) {
+      current = guard(current);
+    }
+    return current;
+  }
 
   void change(NavigationState Function(NavigationState) fn) {
-    final newPages = fn(UnmodifiableListView(_pages));
+    final newPages = fn(_pages);
     final guardedPages = _applyGuards(newPages);
     if (listEquals(_pages, guardedPages)) return;
     _pages = UnmodifiableListView(guardedPages);
@@ -51,6 +58,7 @@ class HelmRouterDelegate extends RouterDelegate<NavigationState>
     change((state) => state);
   }
 
+  @pragma('vm:prefer-inline')
   Page<Object?> rebuildPage({
     required Page<Object?> old,
     required $RouteMeta newArgs,
@@ -65,89 +73,100 @@ class HelmRouterDelegate extends RouterDelegate<NavigationState>
         ),
       );
 
-  void prepareNestedNavigator(String parentRouteName) {
-    change((current) {
-      List<Page<Object?>> recur(List<Page<Object?>> pages) => pages.map((page) {
-            final args = page.meta;
-            if (args == null) return page;
+  void prepareNestedNavigator(String parentRouteName) =>
+      change((current) => _prepareNestedNavigatorRecursive(current, parentRouteName));
 
-            // case 1: this is the parent that needs an empty child stack
-            if (page.name == parentRouteName && args.children == null) {
-              final newArgs = args.copyWith(children: () => []);
-              return rebuildPage(old: page, newArgs: newArgs);
-            }
+  NavigationState _prepareNestedNavigatorRecursive(NavigationState pages, String parentRouteName) {
+    var hasChanges = false;
+    final result = NavigationState.generate(pages.length, (i) {
+      final page = pages[i];
+      final args = page.meta;
+      if (args == null) return page;
 
-            // case 2: recurse into children
-            if (args.children?.isNotEmpty ?? false) {
-              final updated = recur(args.children!);
-              if (!listEquals(updated, args.children)) {
-                final newArgs = args.copyWith(children: () => updated);
-                return rebuildPage(old: page, newArgs: newArgs);
-              }
-            }
-            return page;
-          }).toList();
+      // case 1: this is the parent that needs an empty child stack
+      if (page.name == parentRouteName && args.children == null) {
+        hasChanges = true;
+        final newArgs = args.copyWith(children: () => const <Page<Object?>>[]);
+        return rebuildPage(old: page, newArgs: newArgs);
+      }
 
-      return recur(current);
+      // case 2: recurse into children
+      final children = args.children;
+      if (children != null && children.isNotEmpty) {
+        final updated = _prepareNestedNavigatorRecursive(children, parentRouteName);
+        if (!listEquals(updated, children)) {
+          hasChanges = true;
+          final newArgs = args.copyWith(children: () => updated);
+          return rebuildPage(old: page, newArgs: newArgs);
+        }
+      }
+      return page;
     });
+
+    return hasChanges ? result : pages;
   }
 
-  void setInitialNestedRoute(String parentRouteName, NavigationState initialState) {
-    change((current) {
-      List<Page<Object?>> recur(List<Page<Object?>> pages) => pages.map((page) {
-            final args = page.meta;
-            if (args == null) return page;
-            // case 1: we found the target parent page.
-            if (page.name == parentRouteName && (args.children == null || args.children!.isEmpty)) {
-              final newArgs = args.copyWith(children: () => initialState);
-              return rebuildPage(old: page, newArgs: newArgs);
-            }
-            // case 2: not the target, but this page might contain the target in its children.
-            if (args.children?.isNotEmpty ?? false) {
-              final updated = recur(args.children!);
-              if (!listEquals(updated, args.children)) {
-                final newArgs = args.copyWith(children: () => updated);
-                return rebuildPage(old: page, newArgs: newArgs);
-              }
-            }
-            // case 3: no changes needed for this page.
-            return page;
-          }).toList();
+  void setInitialNestedRoute(String parentRouteName, NavigationState initialState) =>
+      change((current) => _setInitialNestedRouteRecursive(current, parentRouteName, initialState));
 
-      return recur(current);
-    });
+  NavigationState _setInitialNestedRouteRecursive(
+      NavigationState pages, String parentRouteName, NavigationState initialState) {
+    for (var i = 0; i < pages.length; i++) {
+      final page = pages[i];
+      final args = page.meta;
+      if (args == null) continue;
+
+      // case 1: we found the target parent page.
+      if (page.name == parentRouteName && (args.children == null || args.children!.isEmpty)) {
+        final newArgs = args.copyWith(children: () => initialState);
+        final result = NavigationState.from(pages);
+        result[i] = rebuildPage(old: page, newArgs: newArgs);
+        return result;
+      }
+
+      // case 2: recurse into children
+      final children = args.children;
+      if (children != null && children.isNotEmpty) {
+        final updated = _setInitialNestedRouteRecursive(children, parentRouteName, initialState);
+        if (!listEquals(updated, children)) {
+          final newArgs = args.copyWith(children: () => updated);
+          final result = NavigationState.from(pages);
+          result[i] = rebuildPage(old: page, newArgs: newArgs);
+          return result;
+        }
+      }
+    }
+    return pages;
   }
 
   void replaceNestedStack(String parentRouteName, NavigationState nestedPages) =>
       change((current) => _updateNestedStack(current, parentRouteName, nestedPages));
 
   NavigationState _updateNestedStack(NavigationState pages, String parentRouteName, NavigationState nestedPages) {
-    final result = List<Page<Object?>>.from(pages);
-    var changed = false;
-
-    for (var i = 0; i < result.length; i++) {
-      final page = result[i];
+    for (var i = 0; i < pages.length; i++) {
+      final page = pages[i];
       final args = page.meta;
 
       if (page.name == parentRouteName) {
         final newArgs = args!.copyWith(children: () => nestedPages);
+        final result = NavigationState.from(pages);
         result[i] = rebuildPage(old: page, newArgs: newArgs);
-        changed = true;
-        break;
+        return result;
       }
 
-      if (args?.children?.isNotEmpty ?? false) {
-        final updatedChildren = _updateNestedStack(args!.children!, parentRouteName, nestedPages);
-        if (!listEquals(updatedChildren, args.children)) {
-          final newArgs = args.copyWith(children: () => updatedChildren);
+      final children = args?.children;
+      if (children != null && children.isNotEmpty) {
+        final updatedChildren = _updateNestedStack(children, parentRouteName, nestedPages);
+        if (!listEquals(updatedChildren, children)) {
+          final newArgs = args!.copyWith(children: () => updatedChildren);
+          final result = NavigationState.from(pages);
           result[i] = rebuildPage(old: page, newArgs: newArgs);
-          changed = true;
-          break;
+          return result;
         }
       }
     }
 
-    return changed ? result : pages;
+    return pages;
   }
 
   @override
@@ -160,10 +179,13 @@ class HelmRouterDelegate extends RouterDelegate<NavigationState>
 
   @override
   Future<bool> popRoute() {
-    if (currentConfiguration.isEmpty) return Future.value(false);
+    if (_pages.isEmpty) return Future.value(false);
+
     final lastPage = _pages.last;
     final lastArgs = lastPage.meta;
-    if (lastArgs?.children?.isNotEmpty ?? false) {
+    final children = lastArgs?.children;
+
+    if (children != null && children.isNotEmpty) {
       change(_popDeepestPage);
       return Future.value(true);
     }
@@ -181,12 +203,13 @@ class HelmRouterDelegate extends RouterDelegate<NavigationState>
 
     final lastPage = pages.last;
     final args = lastPage.meta;
+    final children = args?.children;
 
-    if (args?.children?.isNotEmpty ?? false) {
-      final updatedChildren = _popDeepestPage(args!.children!);
+    if (children != null && children.isNotEmpty) {
+      final updatedChildren = _popDeepestPage(children);
 
-      if (!listEquals(updatedChildren, args.children)) {
-        final newArgs = args.copyWith(children: () => updatedChildren);
+      if (!listEquals(updatedChildren, children)) {
+        final newArgs = args!.copyWith(children: () => updatedChildren);
         final newLastPage = rebuildPage(old: lastPage, newArgs: newArgs);
         return [...pages.sublist(0, pages.length - 1), newLastPage];
       }
@@ -195,19 +218,26 @@ class HelmRouterDelegate extends RouterDelegate<NavigationState>
   }
 
   NavigationState? _removePage(NavigationState pages, Page<Object?> targetPage) {
-    final topLevelIndex = pages.indexWhere((p) => p == targetPage);
-    if (topLevelIndex != -1) return pages.where((p) => p != targetPage).toList();
+    // Fast path: check top level first with indexOf for better performance
+    final topLevelIndex = pages.indexOf(targetPage);
+    if (topLevelIndex != -1) {
+      final result = NavigationState.from(pages);
+      result.removeAt(topLevelIndex);
+      return result;
+    }
 
+    // Deep search in children
     for (var i = 0; i < pages.length; i++) {
       final page = pages[i];
       final args = page.meta;
+      final children = args?.children;
 
-      if (args?.children?.isNotEmpty ?? false) {
-        final newChildren = _removePage(args!.children!, targetPage);
-        if (newChildren != null && !listEquals(newChildren, args.children)) {
-          final newArgs = args.copyWith(children: () => newChildren);
+      if (children != null && children.isNotEmpty) {
+        final newChildren = _removePage(children, targetPage);
+        if (newChildren != null && !listEquals(newChildren, children)) {
+          final newArgs = args!.copyWith(children: () => newChildren);
           final newPage = rebuildPage(old: page, newArgs: newArgs);
-          final result = List<Page<Object?>>.from(pages);
+          final result = NavigationState.from(pages);
           result[i] = newPage;
           return result;
         }
@@ -217,9 +247,7 @@ class HelmRouterDelegate extends RouterDelegate<NavigationState>
     return null;
   }
 
-  void _onDidRemovePage(Page<Object?> page) {
-    change((current) => _removePage(current, page) ?? current);
-  }
+  void _onDidRemovePage(Page<Object?> page) => change((current) => _removePage(current, page) ?? current);
 
   @override
   void dispose() {
@@ -243,8 +271,10 @@ class HelmRouterDelegate extends RouterDelegate<NavigationState>
 
 class _PerRouteTransitionDelegate extends TransitionDelegate<Object?> {
   _PerRouteTransitionDelegate({required this.defaultDelegate});
+
   final TransitionDelegate<Object?> defaultDelegate;
   final Map<TransitionDelegate<Object?>, TransitionDelegate<Object?>> _delegateCache = {};
+
   @override
   Iterable<RouteTransitionRecord> resolve({
     required List<RouteTransitionRecord> newPageRouteHistory,
@@ -273,7 +303,5 @@ class _PerRouteTransitionDelegate extends TransitionDelegate<Object?> {
     );
   }
 
-  void dispose() {
-    _delegateCache.clear();
-  }
+  void dispose() => _delegateCache.clear();
 }
