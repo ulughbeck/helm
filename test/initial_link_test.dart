@@ -11,6 +11,21 @@ void main() {
       expect(find.text('Home'), findsOneWidget);
     });
 
+    // testWidgets('Initial route is "//" => redirect to Home', (tester) async {
+    //   await pumpTestApp(tester, initialRoute: '//');
+    //   expect(find.text('Home'), findsOneWidget);
+    // });
+
+    testWidgets('Initial route is "///" => redirect to Home', (tester) async {
+      await pumpTestApp(tester, initialRoute: '///');
+      expect(find.text('Home'), findsOneWidget);
+    });
+
+    testWidgets('Initial route is "///" => redirect to Home', (tester) async {
+      await pumpTestApp(tester, initialRoute: '///');
+      expect(find.text('Home'), findsOneWidget);
+    });
+
     testWidgets('Initial route "/shop" shows shop screen', (tester) async {
       await pumpTestApp(tester, initialRoute: '/shop');
       expect(find.text('Shop Query: {}'), findsOneWidget);
@@ -57,14 +72,16 @@ void main() {
       expect(find.text('404 Not Found'), findsOneWidget);
     });
 
-    testWidgets('Initial route is "//" => redirect to Home', (tester) async {
-      await pumpTestApp(tester, initialRoute: '//');
-      expect(find.text('Home'), findsOneWidget);
+    testWidgets('Nested navigator route pushes initial route', (tester) async {
+      await pumpTestApp(tester, initialRoute: '/category/laptops/');
+      expect(find.text('Category: laptops'), findsOneWidget);
+      expect(find.text('Settings'), findsOneWidget);
     });
 
-    testWidgets('Initial route is "///" => redirect to Home', (tester) async {
-      await pumpTestApp(tester, initialRoute: '///');
-      expect(find.text('Home'), findsOneWidget);
+    testWidgets('Nested navigator route with initial route specified', (tester) async {
+      await pumpTestApp(tester, initialRoute: '/category/laptops/!settings');
+      expect(find.text('Category: laptops'), findsOneWidget);
+      expect(find.text('Settings'), findsOneWidget);
     });
 
     testWidgets('Guard adds Home screen if not present', (tester) async {

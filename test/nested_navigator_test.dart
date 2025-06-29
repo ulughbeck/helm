@@ -8,8 +8,8 @@ void main() {
     testWidgets('initializes with its own nested route', (tester) async {
       await pumpTestApp(tester, initialRoute: '/category/laptops');
       expect(find.text('Category: laptops'), findsOneWidget);
-      // The nested navigator should have initialized its child route (ProductsScreen)
-      expect(find.text('Products'), findsOneWidget);
+      // The nested navigator should have initialized its child route (SettingsScreen)
+      expect(find.text('Settings'), findsOneWidget);
     });
 
     testWidgets('can push and pop within the nested navigator', (tester) async {

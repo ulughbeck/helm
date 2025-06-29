@@ -1,11 +1,11 @@
 import 'dart:collection';
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart' show MaterialPage;
 import 'package:flutter/widgets.dart';
 
 import 'parser.dart';
 import 'route.dart';
+import 'state.dart';
 
 /// A type alias for a navigation guard, a function that can transform the page stack.
 typedef NavigationGuard = NavigationState Function(NavigationState pages);
@@ -46,32 +46,15 @@ class HelmRouterDelegate extends RouterDelegate<NavigationState>
   }
 
   void change(NavigationState Function(NavigationState) fn) {
-    final newPages = fn(_pages);
+    final newPages = fn(NavigationState.from(_pages));
     final guardedPages = _applyGuards(newPages);
     if (listEquals(_pages, guardedPages)) return;
     _pages = UnmodifiableListView(guardedPages);
+    if (kDebugMode) _pages.logNavigationState();
     notifyListeners();
   }
 
-  void _revalidateState() {
-    // routeParser.clearCaches();
-    change((state) => state);
-  }
-
-  @pragma('vm:prefer-inline')
-  Page<Object?> rebuildPage({
-    required Page<Object?> old,
-    required $RouteMeta newArgs,
-  }) =>
-      MaterialPage<Object?>(
-        key: old.key,
-        name: old.name,
-        arguments: newArgs,
-        child: newArgs.route.builder(
-          newArgs.pathParams,
-          newArgs.queryParams,
-        ),
-      );
+  void _revalidateState() => change((state) => state);
 
   void prepareNestedNavigator(String parentRouteName) =>
       change((current) => _prepareNestedNavigatorRecursive(current, parentRouteName));
@@ -87,7 +70,7 @@ class HelmRouterDelegate extends RouterDelegate<NavigationState>
       if (page.name == parentRouteName && args.children == null) {
         hasChanges = true;
         final newArgs = args.copyWith(children: () => const <Page<Object?>>[]);
-        return rebuildPage(old: page, newArgs: newArgs);
+        return page.meta!.route.build(page.key, page.name!, newArgs);
       }
 
       // case 2: recurse into children
@@ -97,7 +80,7 @@ class HelmRouterDelegate extends RouterDelegate<NavigationState>
         if (!listEquals(updated, children)) {
           hasChanges = true;
           final newArgs = args.copyWith(children: () => updated);
-          return rebuildPage(old: page, newArgs: newArgs);
+          return page.meta!.route.build(page.key, page.name!, newArgs);
         }
       }
       return page;
@@ -120,7 +103,7 @@ class HelmRouterDelegate extends RouterDelegate<NavigationState>
       if (page.name == parentRouteName && (args.children == null || args.children!.isEmpty)) {
         final newArgs = args.copyWith(children: () => initialState);
         final result = NavigationState.from(pages);
-        result[i] = rebuildPage(old: page, newArgs: newArgs);
+        result[i] = page.meta!.route.build(page.key, page.name!, newArgs);
         return result;
       }
 
@@ -131,7 +114,7 @@ class HelmRouterDelegate extends RouterDelegate<NavigationState>
         if (!listEquals(updated, children)) {
           final newArgs = args.copyWith(children: () => updated);
           final result = NavigationState.from(pages);
-          result[i] = rebuildPage(old: page, newArgs: newArgs);
+          result[i] = page.meta!.route.build(page.key, page.name!, newArgs);
           return result;
         }
       }
@@ -150,7 +133,7 @@ class HelmRouterDelegate extends RouterDelegate<NavigationState>
       if (page.name == parentRouteName) {
         final newArgs = args!.copyWith(children: () => nestedPages);
         final result = NavigationState.from(pages);
-        result[i] = rebuildPage(old: page, newArgs: newArgs);
+        result[i] = page.meta!.route.build(page.key, page.name!, newArgs);
         return result;
       }
 
@@ -160,7 +143,7 @@ class HelmRouterDelegate extends RouterDelegate<NavigationState>
         if (!listEquals(updatedChildren, children)) {
           final newArgs = args!.copyWith(children: () => updatedChildren);
           final result = NavigationState.from(pages);
-          result[i] = rebuildPage(old: page, newArgs: newArgs);
+          result[i] = page.meta!.route.build(page.key, page.name!, newArgs);
           return result;
         }
       }
@@ -210,7 +193,7 @@ class HelmRouterDelegate extends RouterDelegate<NavigationState>
 
       if (!listEquals(updatedChildren, children)) {
         final newArgs = args!.copyWith(children: () => updatedChildren);
-        final newLastPage = rebuildPage(old: lastPage, newArgs: newArgs);
+        final newLastPage = lastPage.meta!.route.build(lastPage.key, lastPage.name!, newArgs);
         return [...pages.sublist(0, pages.length - 1), newLastPage];
       }
     }
@@ -236,7 +219,7 @@ class HelmRouterDelegate extends RouterDelegate<NavigationState>
         final newChildren = _removePage(children, targetPage);
         if (newChildren != null && !listEquals(newChildren, children)) {
           final newArgs = args!.copyWith(children: () => newChildren);
-          final newPage = rebuildPage(old: page, newArgs: newArgs);
+          final newPage = page.meta!.route.build(page.key, page.name!, newArgs);
           final result = NavigationState.from(pages);
           result[i] = newPage;
           return result;

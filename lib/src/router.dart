@@ -5,6 +5,7 @@ import 'delegate.dart';
 import 'initial_uri_provider.dart';
 import 'parser.dart';
 import 'route.dart';
+import 'state.dart';
 
 /// The main router configuration for the application.
 class HelmRouter extends RouterConfig<NavigationState> {
@@ -18,12 +19,22 @@ class HelmRouter extends RouterConfig<NavigationState> {
     assert(() {
       if (routes.isEmpty) throw ArgumentError('Routes list cannot be empty');
       final seenPaths = <String>{};
+      final seenParams = <String>{};
+      final paramRegex = RegExp(r':(\w+)\+?');
+
       for (final route in routes) {
         final path = route.path;
         if (path.isEmpty) throw ArgumentError('Route path cannot be empty.');
         if (!path.startsWith('/')) throw ArgumentError('Route path must start with "/". Offending route: "$path"');
         if (path == '/-') throw ArgumentError('Route path cannot be "/-".');
         if (!seenPaths.add(path)) throw ArgumentError('Duplicate route path found: "$path"');
+        for (final match in paramRegex.allMatches(path)) {
+          final paramName = match.group(1);
+          if (paramName != null && !seenParams.add(paramName)) {
+            throw ArgumentError(
+                'Duplicate path parameter name found: ":$paramName". Parameter names must be unique across all routes.');
+          }
+        }
       }
       return true;
     }());
@@ -57,8 +68,6 @@ class HelmRouter extends RouterConfig<NavigationState> {
     required RouteInformationProvider super.routeInformationProvider,
   }) : super(routerDelegate: delegate);
 
-  static final Uri _rootUri = Uri.parse('/');
-
   static HelmRouterDelegate delegateOf(BuildContext context) {
     final delegate = Router.of(context).routerDelegate;
     assert(
@@ -82,61 +91,57 @@ class HelmRouter extends RouterConfig<NavigationState> {
     final parser = delegate.routeParser;
 
     change(context, (current) {
-      Page<Object?>? findLastPage(NavigationState pages) {
-        if (pages.isEmpty) return null;
+      NavigationState findDeepestStack(NavigationState pages) {
+        if (rootNavigator || pages.isEmpty) return pages;
         final last = pages.last;
-        final args = last.meta;
-        final children = args?.children;
-        if (children?.isNotEmpty == true) return findLastPage(children!);
-        return last;
+        final children = last.meta?.children;
+        if (children != null) return findDeepestStack(children);
+        return pages;
       }
+
+      final deepestStack = findDeepestStack(current);
+      final lastPageOnStack = deepestStack.isNotEmpty ? deepestStack.last : null;
+      final lastRouteOnStack = lastPageOnStack?.meta?.route;
 
       final pagesToAdd = <Page<Object?>>[];
 
-      // 1. Check if a parent route should be pushed first.
-      final parentRoute = parser.findParentForRoute(route);
-      if (parentRoute != null) {
-        final lastPageOnStack = findLastPage(current);
-        if (lastPageOnStack == null || (lastPageOnStack.meta)?.route != parentRoute) {
-          pagesToAdd.add(parentRoute.page());
+      // 1. Check if the route being pushed is the same as the last one AND is arbitrary.
+      if (route.isArbitrary && route == lastRouteOnStack) {
+        // Case 1: We are pushing another instance of the same arbitrary route.
+        pagesToAdd.add(route.page(pathParams: pathParams, queryParams: queryParams));
+      } else {
+        // Case 2: This is a different route. Build the full parent stack.
+        final parentPages = parser.getParentStackFor(route, pathParams);
+        for (final parentPage in parentPages) {
+          // Only add a parent if it's not already the last page on the stack.
+          if (lastPageOnStack == null || parentPage.name != lastPageOnStack.name) {
+            pagesToAdd.add(parentPage);
+          }
         }
+        // And finally, add the target page itself.
+        pagesToAdd.add(route.page(pathParams: pathParams, queryParams: queryParams));
       }
 
-      // 2. Add the actual page the user requested to push.
-      pagesToAdd.add(route.page(pathParams: pathParams, queryParams: queryParams));
-
-      // This helper adds a single page to the deepest stack.
-      NavigationState addToDeepest(NavigationState stack, Page<Object?> newPage) {
-        if (rootNavigator || stack.isEmpty) return <Page<Object?>>[...stack, newPage];
+      NavigationState addAllToDeepest(NavigationState stack, List<Page<Object?>> newPages) {
+        if (rootNavigator || stack.isEmpty) return <Page<Object?>>[...stack, ...newPages];
 
         final last = stack.last;
         final lastArgs = last.meta;
-        if (lastArgs == null) return <Page<Object?>>[...stack, newPage];
+        if (lastArgs == null) return <Page<Object?>>[...stack, ...newPages];
 
         final children = lastArgs.children;
         if (children != null) {
-          final updatedChildren = addToDeepest(children, newPage);
+          final updatedChildren = addAllToDeepest(children, newPages);
           if (listEquals(updatedChildren, children)) return stack;
 
           final newArgs = lastArgs.copyWith(children: () => updatedChildren);
-          final newParent = delegate.rebuildPage(old: last, newArgs: newArgs);
-          final newStack = <Page<Object?>>[];
-          for (var i = 0; i < stack.length - 1; i++) {
-            newStack.add(stack[i]);
-          }
-          newStack.add(newParent);
-          return newStack;
+          final newParent = newArgs.route.build(last.key, last.name!, newArgs);
+          return [...stack.sublist(0, stack.length - 1), newParent];
         }
-        return <Page<Object?>>[...stack, newPage];
+        return <Page<Object?>>[...stack, ...newPages];
       }
 
-      // 3. Sequentially add the pages that need to be pushed.
-      var updatedStack = current;
-      for (final page in pagesToAdd) {
-        updatedStack = addToDeepest(updatedStack, page);
-      }
-
-      return updatedStack;
+      return addAllToDeepest(current, pagesToAdd);
     });
   }
 
@@ -144,7 +149,7 @@ class HelmRouter extends RouterConfig<NavigationState> {
 
   static void popUntillRoot(BuildContext context) {
     final delegate = delegateOf(context);
-    final rootState = delegate.routeParser.parseUri(_rootUri);
+    final rootState = delegate.routeParser.parseUri(Uri.parse('/'));
     delegate.change((_) => rootState);
   }
 

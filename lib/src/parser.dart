@@ -1,34 +1,45 @@
-import 'dart:collection';
+import 'dart:developer';
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart' show MaterialPage;
 import 'package:flutter/widgets.dart';
 
 import 'route.dart';
+import 'state.dart';
 
-/// A type alias for a matched route definition with its path and params.
-typedef _MatchedRoute = ({Routable route, String matchedPath, Map<String, String> pathParams});
+/// Represents the logical units of a URL path.
+enum _TokenType {
+  /// A normal path segment, like "products" or "123".
+  pathSegment,
 
-/// Trie node for efficient route matching
-class _TrieNode {
-  _TrieNode({this.isParameter = false, this.parameterName});
+  /// The dive operator: `/!`.
+  dive,
 
-  final Map<String, _TrieNode> children = {};
-  final bool isParameter;
-  final String? parameterName;
-  Routable? route;
-  _TrieNode? parameterChild;
+  /// The rise operator: `!/`.
+  rise,
 
-  bool get isLeaf => route != null;
+  /// The arbitrary sequence terminator: `~`.
+  terminator,
 }
 
-/// Cached match result for performance
-class _CachedMatch {
-  const _CachedMatch(this.route, this.pathParams, this.matchedPath);
+/// A token represents a single logical unit of a URL path.
+class _Token {
+  const _Token(this.type, this.value);
+  final _TokenType type;
+  final String value;
+  @override
+  String toString() => 'Token(${type.name}, "$value")';
+}
 
-  final Routable route;
-  final Map<String, String> pathParams;
-  final String matchedPath;
+/// A matched route definition with its path and params.
+typedef _TrieMatch = ({Routable route, Map<String, String> pathParams, int segmentsConsumed});
+
+/// Trie node for efficient route matching.
+class _TrieNode {
+  final Map<String, _TrieNode> children = {};
+  _TrieNode? parameterChild;
+  Routable? route;
+  String? parameterName;
+  bool isArbitrary = false;
 }
 
 class HelmRouteParser {
@@ -37,23 +48,323 @@ class HelmRouteParser {
   }
 
   final List<Routable> routes;
-
   final _TrieNode _trieRoot = _TrieNode();
-  final LinkedHashMap<String, _CachedMatch?> _matchCache = LinkedHashMap<String, _CachedMatch?>();
-  final LinkedHashMap<String, List<String>> _segmentCache = LinkedHashMap<String, List<String>>();
-  final LinkedHashMap<String, NavigationState> _parseCache = LinkedHashMap<String, NavigationState>();
 
-  static const int _maxCacheSize = 256;
-  static const int _maxParseResults = 100;
+  // ---------------------------------------------------------------------------
+  // TOKENIZATION: Convert String -> Stream of Tokens
+  // ---------------------------------------------------------------------------
 
-  static final RegExp _multipleSlashRegex = RegExp(r'/+');
-  static final RegExp _doubleSlashRegex = RegExp(r'//');
-
-  void clearCaches() {
-    _matchCache.clear();
-    _segmentCache.clear();
-    _parseCache.clear();
+  List<_Token> _tokenize(String path) {
+    final tokens = <_Token>[];
+    int i = 0;
+    while (i < path.length) {
+      if (path.startsWith('/!', i)) {
+        tokens.add(const _Token(_TokenType.dive, '/!'));
+        i += 2;
+      } else if (path.startsWith('!/', i)) {
+        tokens.add(const _Token(_TokenType.rise, '!/'));
+        i += 2;
+      } else if (path[i] == '~') {
+        tokens.add(const _Token(_TokenType.terminator, '~'));
+        i += 1;
+      } else if (path[i] == '/') {
+        i += 1;
+      } else {
+        // It's a path segment. Read until the next separator or operator.
+        final start = i;
+        while (i < path.length && !'/!~'.contains(path[i])) {
+          i++;
+        }
+        tokens.add(_Token(_TokenType.pathSegment, path.substring(start, i)));
+      }
+    }
+    return tokens;
   }
+
+  // ---------------------------------------------------------------------------
+  // PARSING: Convert Tokens -> NavigationState
+  // ---------------------------------------------------------------------------
+
+  /// The main public parsing method.
+  NavigationState parseUri(Uri uri) {
+    if (uri.query.contains('?')) return [];
+
+    final path = uri.path;
+    final tokens = _tokenize(path);
+
+    final isRootPath = path.isNotEmpty && path.replaceAll('/', '').isEmpty;
+    if (tokens.isEmpty && isRootPath) {
+      final rootRoute = _trieRoot.route;
+      if (rootRoute == null) return [];
+      final page = rootRoute.page(queryParams: uri.queryParameters);
+      return [page];
+    }
+
+    final contextStack = <NavigationState>[<Page>[]];
+    int tokenIndex = 0;
+
+    while (tokenIndex < tokens.length) {
+      final token = tokens[tokenIndex];
+      switch (token.type) {
+        case _TokenType.dive:
+          _handleDive(contextStack);
+          tokenIndex++;
+          break;
+
+        case _TokenType.rise:
+          _handleRise(contextStack);
+          tokenIndex++;
+          break;
+
+        case _TokenType.pathSegment:
+          final result = _matchPathToPages(tokens, tokenIndex);
+          contextStack.last.addAll(result.pages);
+          tokenIndex = result.nextTokenIndex;
+          break;
+
+        case _TokenType.terminator:
+          // Terminators are handled within _matchPathToPages,
+          // seeing one here means it's likely misplaced.
+          log('Warning: Encountered unexpected terminator token. Ignoring.', name: 'HelmRouter');
+          tokenIndex++;
+          break;
+      }
+    }
+
+    if (uri.queryParameters.isNotEmpty) _applyQueryParamsToAll(contextStack.first, uri.queryParameters);
+    return contextStack.first;
+  }
+
+  void _handleDive(List<NavigationState> contextStack) {
+    if (contextStack.last.isEmpty) {
+      // If the path starts with `/!`, we assume it's nested under the root.
+      final rootRoute = _trieRoot.route;
+      if (rootRoute == null) {
+        throw Exception('Cannot dive: no parent page to nest under and no root ("/") route defined.');
+      }
+      contextStack.last.add(rootRoute.page());
+    }
+
+    final parentPage = contextStack.last.last;
+    final parentMeta = parentPage.meta;
+    if (parentMeta == null) throw Exception('Cannot dive: parent page is missing route metadata.');
+
+    final newChildren = <Page<Object?>>[];
+    final newMeta = parentMeta.copyWith(children: () => newChildren);
+
+    // Replace the parent page with a new one containing the children reference.
+    contextStack.last[contextStack.last.length - 1] = parentMeta.route.build(
+      parentPage.key,
+      parentPage.name!,
+      newMeta,
+    );
+
+    // The new context for parsing is the children list.
+    contextStack.add(newChildren);
+  }
+
+  void _handleRise(List<NavigationState> contextStack) {
+    if (contextStack.length <= 1) throw Exception('Cannot rise: already at the root of the navigation stack.');
+    contextStack.removeLast();
+  }
+// In class HelmRouteParser
+
+  ({NavigationState pages, int nextTokenIndex}) _matchPathToPages(List<_Token> tokens, int startIndex) {
+    final pages = <Page>[];
+    int currentIndex = startIndex;
+
+    while (currentIndex < tokens.length && tokens[currentIndex].type == _TokenType.pathSegment) {
+      // 1. Get the list of remaining path segments to match against without advancing the main index.
+      final remainingSegments =
+          tokens.sublist(currentIndex).takeWhile((t) => t.type == _TokenType.pathSegment).map((t) => t.value).toList();
+
+      // Should not happen due to the while loop condition, but safe to have.
+      if (remainingSegments.isEmpty) break;
+
+      // 2. Find the best match for the start of the remaining path segments.
+      final bestMatch = _findBestMatch(remainingSegments, 0, _trieRoot);
+
+      if (bestMatch == null || bestMatch.segmentsConsumed == 0) {
+        int endOfBlockIndex = currentIndex;
+        while (endOfBlockIndex < tokens.length && tokens[endOfBlockIndex].type == _TokenType.pathSegment) {
+          endOfBlockIndex++;
+        }
+        currentIndex = endOfBlockIndex;
+
+        // Break the loop to return whatever pages we have found so far.
+        break;
+      }
+
+      final matchedRoute = bestMatch.route;
+      final params = bestMatch.pathParams;
+      final consumedCount = bestMatch.segmentsConsumed;
+      final matchedSegments = remainingSegments.sublist(0, consumedCount);
+
+      // 3. Handle Implicit Parent Routes by looking at the segments we consumed.
+      pages.addAll(findParentPages(matchedSegments, params));
+
+      // 4. Add the matched page itself.
+      pages.add(matchedRoute.page(pathParams: params));
+
+      // 5. Advance the main `currentIndex` by the number of segments the match consumed.
+      //    Since we now guard against consumedCount == 0, this is always safe.
+      currentIndex += consumedCount;
+
+      // 6. Handle Arbitrary (+) Routes
+      if (matchedRoute.path.endsWith('+')) {
+        final paramName = RegExp(r':(\w+)\+').firstMatch(matchedRoute.path)!.group(1)!;
+        while (currentIndex < tokens.length && tokens[currentIndex].type == _TokenType.pathSegment) {
+          final segmentValue = tokens[currentIndex].value;
+          pages.add(matchedRoute.page(pathParams: {paramName: segmentValue}));
+          currentIndex++;
+        }
+
+        if (currentIndex < tokens.length && tokens[currentIndex].type == _TokenType.terminator) {
+          currentIndex++;
+        }
+      }
+    }
+    return (pages: pages, nextTokenIndex: currentIndex);
+  }
+
+  void _applyQueryParamsToAll(NavigationState pages, Map<String, String> queryParams) {
+    if (queryParams.isEmpty) return;
+
+    // Iterate through all pages at the current navigation level.
+    for (int i = 0; i < pages.length; i++) {
+      final page = pages[i];
+      final meta = page.meta;
+
+      if (meta != null) {
+        // Create new metadata for the page, merging the existing query params with the new ones.
+        final newMeta = meta.copyWith(queryParams: {...meta.queryParams, ...queryParams});
+
+        // Rebuild the page with the updated metadata.
+        pages[i] = meta.route.build(page.key, page.name!, newMeta);
+
+        // If this page contains a nested navigator, recurse into its children.
+        if (meta.children != null) _applyQueryParamsToAll(meta.children!, queryParams);
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // URL RESTORATION: Convert NavigationState -> String
+  // ---------------------------------------------------------------------------
+
+  /// The main public restoration method.
+  Uri? restoreUri(NavigationState configuration) {
+    if (configuration.isEmpty) return null;
+
+    final internalPath = _restoreInternal(configuration);
+    String cleanPath = internalPath;
+
+    // 1. First, remove all "rise" operators from the path.
+    while (cleanPath.endsWith('!/')) {
+      cleanPath = cleanPath.substring(0, cleanPath.length - 2);
+    }
+
+    // 2. After the above replacements, a trailing slash might be left. Remove it.
+    if (cleanPath.length > 1 && cleanPath.endsWith('/')) {
+      cleanPath = cleanPath.substring(0, cleanPath.length - 1);
+    }
+
+    // 3. Finally, handle the terminator and the root path edge case.
+    cleanPath = cleanPath.replaceAll('~', '');
+    if (cleanPath.isEmpty) cleanPath = '/';
+
+    final allQueryParams = <String, String>{};
+    _collectAllQueryParams(configuration, allQueryParams);
+
+    if (kDebugMode) log('Inner Path: $internalPath', name: 'HelmRouter');
+    if (kDebugMode) log('Final Path: $cleanPath', name: 'HelmRouter');
+    return Uri(path: cleanPath, queryParameters: allQueryParams.isEmpty ? null : allQueryParams);
+  }
+
+  String _restoreInternal(NavigationState pages) {
+    final buffer = StringBuffer();
+    String lastRestoredPath = '';
+    Routable? lastRoute;
+    bool inArbitrarySequence = false;
+
+    for (final page in pages) {
+      final meta = page.meta;
+      if (meta == null) continue;
+
+      final currentRoute = meta.route;
+      final isArbitrary = currentRoute.path.endsWith('+');
+
+      // Check for end of an arbitrary sequence
+      if (inArbitrarySequence && currentRoute != lastRoute) {
+        buffer.write('~');
+        inArbitrarySequence = false;
+      }
+
+      // Handle continuation of an arbitrary sequence
+      if (inArbitrarySequence && currentRoute == lastRoute) {
+        final paramName = RegExp(r':(\w+)\+').firstMatch(currentRoute.path)!.group(1)!;
+        final paramValue = meta.pathParams[paramName];
+        if (paramValue != null) buffer.write('/$paramValue');
+      } else {
+        // Handle a regular page or the first page in a sequence
+        final restoredPath = currentRoute.restorePathForRoute(meta.pathParams);
+        final isRootPageWithChildren = restoredPath == '/' && meta.children != null && meta.children!.isNotEmpty;
+
+        if (!isRootPageWithChildren) {
+          // This is the corrected logic block
+          if (lastRestoredPath.isNotEmpty &&
+              restoredPath.startsWith(lastRestoredPath) &&
+              restoredPath.length > lastRestoredPath.length) {
+            final diff = restoredPath.substring(lastRestoredPath.length);
+            buffer.write(diff);
+          } else {
+            var pathSegmentToWrite = restoredPath;
+            if (buffer.isNotEmpty && buffer.toString().endsWith('/') && pathSegmentToWrite.startsWith('/')) {
+              pathSegmentToWrite = pathSegmentToWrite.substring(1);
+            }
+            buffer.write(pathSegmentToWrite);
+          }
+          // Update the last path to the full path of the route we just processed.
+          lastRestoredPath = restoredPath;
+        }
+      }
+
+      lastRoute = currentRoute;
+      inArbitrarySequence = isArbitrary;
+
+      // Handle children recursively
+      if (meta.children != null && meta.children!.isNotEmpty) {
+        if (inArbitrarySequence) {
+          buffer.write('~');
+          inArbitrarySequence = false;
+        }
+        buffer.write('/!');
+        var childPath = _restoreInternal(meta.children!);
+        if (childPath.startsWith('/')) childPath = childPath.substring(1);
+        buffer.write(childPath);
+        buffer.write('!/');
+        lastRestoredPath = '';
+        lastRoute = null;
+      }
+    }
+    return buffer.toString();
+  }
+
+  void _collectAllQueryParams(NavigationState pages, Map<String, String> accumulator) {
+    for (final page in pages) {
+      final meta = page.meta;
+      if (meta != null) {
+        accumulator.addAll(meta.queryParams);
+        if (meta.children != null) {
+          _collectAllQueryParams(meta.children!, accumulator);
+        }
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // TRIE & MATCHING HELPERS
+  // ---------------------------------------------------------------------------
 
   void _buildTrie() {
     for (final route in routes) {
@@ -62,364 +373,137 @@ class HelmRouteParser {
         continue;
       }
 
-      final segments = _getPathSegments(route.path);
       var current = _trieRoot;
+      final segments = route.path.replaceAll(RegExp(r'^/+|/+$'), '').split('/');
 
-      for (var i = 0; i < segments.length; i++) {
-        final segment = segments[i];
-
+      for (final segment in segments) {
         if (segment.startsWith(':')) {
-          final paramName = segment.substring(1);
-
-          current.parameterChild ??= _TrieNode(
-            isParameter: true,
-            parameterName: paramName,
-          );
+          var paramName = segment.substring(1);
+          var isArbitrary = false;
+          if (paramName.endsWith('+')) {
+            paramName = paramName.substring(0, paramName.length - 1);
+            isArbitrary = true;
+          }
+          current.parameterChild ??= _TrieNode();
           current = current.parameterChild!;
+          current.parameterName = paramName;
+          current.isArbitrary = isArbitrary;
         } else {
-          current = current.children.putIfAbsent(
-            segment,
-            _TrieNode.new,
-          );
+          current = current.children.putIfAbsent(segment, () => _TrieNode());
         }
       }
-
       current.route = route;
     }
   }
 
-  List<String> _getPathSegments(String path) => _segmentCache.putIfAbsent(path, () {
-        _evictCacheIfNeeded(_segmentCache);
-        final segments = <String>[];
-        var start = 0;
-        for (var i = 0; i < path.length; i++) {
-          if (path[i] == '/') {
-            if (i > start) segments.add(path.substring(start, i));
-            start = i + 1;
-          }
-        }
-        if (start < path.length) segments.add(path.substring(start));
-        return segments;
-      });
-
-  void _evictCacheIfNeeded<K, V>(LinkedHashMap<K, V> cache) {
-    if (cache.length >= _maxCacheSize) {
-      const itemsToRemove = _maxCacheSize ~/ 4;
-      final keysToRemove = cache.keys.take(itemsToRemove).toList();
-      for (final key in keysToRemove) {
-        cache.remove(key);
-      }
-    }
-  }
-
-  _MatchedRoute? _findBestMatch(String path) {
-    final cached = _matchCache[path];
-    if (cached != null) {
-      _matchCache.remove(path);
-      _matchCache[path] = cached;
-      return (route: cached.route, matchedPath: cached.matchedPath, pathParams: cached.pathParams);
-    }
-
-    final pathParams = <String, String>{};
-    final result = _trieMatch(_getPathSegments(path), 0, _trieRoot, pathParams, '');
-
-    if (result != null && result.matchedPath == '/' && path != '/') {
-      _matchCache[path] = null;
-      return null;
-    }
-
-    _evictCacheIfNeeded(_matchCache);
-    _matchCache[path] = result != null ? _CachedMatch(result.route, result.pathParams, result.matchedPath) : null;
-
-    return result;
-  }
-
-  _MatchedRoute? _trieMatch(
+  _TrieMatch? _findBestMatch(
     List<String> segments,
-    int segmentIndex,
-    _TrieNode node,
-    Map<String, String> pathParams,
-    String matchedPath,
-  ) {
-    // Base case: If we've consumed all segments from the URI.
-    if (segmentIndex >= segments.length) {
-      if (node.isLeaf) return (route: node.route!, matchedPath: matchedPath, pathParams: Map.unmodifiable(pathParams));
-      return null;
+    int index,
+    _TrieNode node, [
+    Map<String, String> currentParams = const {},
+  ]) {
+    if (index >= segments.length) {
+      return node.route != null ? (route: node.route!, pathParams: currentParams, segmentsConsumed: index) : null;
     }
 
-    final currentSegment = segments[segmentIndex];
-    final nextSegmentIndex = segmentIndex + 1;
-    final currentMatchedPath = matchedPath.isEmpty ? '/$currentSegment' : '$matchedPath/$currentSegment';
+    final segment = segments[index];
+    _TrieMatch? staticMatch;
+    _TrieMatch? paramMatch;
 
-    _MatchedRoute? bestMatch;
-
-    // Rule 1: Static routes are more specific and should be checked first.
-    final staticChild = node.children[currentSegment];
-    if (staticChild != null) {
-      final staticMatch = _trieMatch(segments, nextSegmentIndex, staticChild, pathParams, currentMatchedPath);
-      if (staticMatch != null) bestMatch = staticMatch;
+    // Rule 1: Static routes are more specific, check them first.
+    if (node.children.containsKey(segment)) {
+      staticMatch = _findBestMatch(segments, index + 1, node.children[segment]!, currentParams);
     }
 
     // Rule 2: Check for parameterized routes.
     if (node.parameterChild != null) {
       final paramName = node.parameterChild!.parameterName!;
-      pathParams[paramName] = currentSegment;
-      final paramMatch = _trieMatch(segments, nextSegmentIndex, node.parameterChild!, pathParams, currentMatchedPath);
-      pathParams.remove(paramName);
-
-      if (paramMatch != null) {
-        if (bestMatch == null || paramMatch.matchedPath.length > bestMatch.matchedPath.length) bestMatch = paramMatch;
-      }
+      final newParams = {...currentParams, paramName: segment};
+      paramMatch = _findBestMatch(segments, index + 1, node.parameterChild!, newParams);
     }
 
-    // Rule 3: Check if the current node itself is a leaf. This handles partial matches,
-    // e.g., route `/users/:id` when the full path is `/users/123/settings`.
-    // The logic must ensure that this partial match is not preferred over a longer, full match.
-    if (node.isLeaf) {
-      final leafMatch = (
-        route: node.route!,
-        matchedPath: matchedPath.isEmpty ? '/' : matchedPath,
-        pathParams: Map<String, String>.unmodifiable(pathParams)
-      );
+    // Prefer static over dynamic if both match.
+    if (staticMatch != null && paramMatch != null) {
+      return staticMatch.segmentsConsumed >= paramMatch.segmentsConsumed ? staticMatch : paramMatch;
+    }
 
-      if (bestMatch == null || leafMatch.matchedPath.length > bestMatch.matchedPath.length) bestMatch = leafMatch;
+    final bestMatch = staticMatch ?? paramMatch;
+
+    // Rule 3: If no deeper match, check if the current node is a valid endpoint.
+    if (node.route != null && bestMatch == null) {
+      return (route: node.route!, pathParams: currentParams, segmentsConsumed: index);
     }
 
     return bestMatch;
   }
 
-  Routable? findParentForRoute(Routable childRoute) {
-    final segments = _getPathSegments(childRoute.path);
-    if (segments.isEmpty || !segments.last.startsWith(':')) return null;
+  NavigationState findParentPages(List<String> segments, Map<String, String> params) {
+    final pages = <Page>[];
+    _TrieNode currentNode = _trieRoot;
 
-    final parentSegments = segments.sublist(0, segments.length - 1);
-    if (parentSegments.isEmpty) return null;
-
-    final parentPath = parentSegments.length == 1 ? '/${parentSegments[0]}' : '/${parentSegments.join('/')}';
-
-    for (final route in routes) {
-      if (route.path == parentPath) return route;
-    }
-    return null;
-  }
-
-  NavigationState parseUri(Uri uri) {
-    var path = uri.path.replaceAll(_multipleSlashRegex, '/');
-
-    if (path.length > 1 && path.endsWith('/')) path = path.substring(0, path.length - 1);
-    if (path.isEmpty) path = '/';
-
-    final cacheKey = uri.query.isEmpty ? path : '$path?${uri.query}';
-
-    final cached = _parseCache[cacheKey];
-    if (cached != null) {
-      _parseCache.remove(cacheKey);
-      _parseCache[cacheKey] = cached;
-      return cached;
-    }
-
-    final NavigationState result = path == '/' ? _parseRootPath(uri) : _parseComplexPath(path, uri);
-
-    // uncomment if show home page on uknown route initially
-    // if (result.isEmpty) return _parseRootPath(uri);
-
-    if (_parseCache.length >= _maxParseResults) {
-      final keysToRemove = _parseCache.keys.take(_maxParseResults ~/ 4).toList();
-      for (final key in keysToRemove) {
-        _parseCache.remove(key);
-      }
-    }
-
-    _parseCache[cacheKey] = List.unmodifiable(result);
-    return result;
-  }
-
-  NavigationState _parseRootPath(Uri uri) {
-    Routable? homeRoute;
-
-    if (_trieRoot.isLeaf) {
-      homeRoute = _trieRoot.route;
-    } else if (routes.isNotEmpty) {
-      homeRoute = routes.first;
-    }
-
-    if (homeRoute == null) return const <Page<Object?>>[];
-    return <Page<Object?>>[homeRoute.page(queryParams: uri.queryParameters)];
-  }
-
-  NavigationState _parseComplexPath(String path, Uri uri) {
-    if (!path.contains('/!') && !path.contains('!/')) return _buildStackFromPath(path, uri.queryParameters);
-
-    final contextStack = <NavigationState>[<Page<Object?>>[]];
-    var remainingPath = path;
-
-    while (remainingPath.isNotEmpty) {
-      final diveIndex = remainingPath.indexOf('/!');
-      final riseIndex = remainingPath.indexOf('!/');
-
-      int delimiterIndex;
-      var isDive = false;
-      var noMoreDelimiters = false;
-
-      if (diveIndex != -1 && (riseIndex == -1 || diveIndex < riseIndex)) {
-        delimiterIndex = diveIndex;
-        isDive = true;
-      } else if (riseIndex != -1) {
-        delimiterIndex = riseIndex;
-        isDive = false;
+    for (int i = 0; i < segments.length - 1; i++) {
+      final segment = segments[i];
+      if (currentNode.children.containsKey(segment)) {
+        currentNode = currentNode.children[segment]!;
+      } else if (currentNode.parameterChild != null) {
+        currentNode = currentNode.parameterChild!;
       } else {
-        delimiterIndex = remainingPath.length;
-        noMoreDelimiters = true;
+        break; // Should not happen for a valid match
       }
 
-      final segment = remainingPath.substring(0, delimiterIndex);
-      if (segment.isNotEmpty) {
-        final pages = _buildStackFromPath(segment, uri.queryParameters);
-        contextStack.last.addAll(pages);
-      }
-
-      if (noMoreDelimiters) break;
-
-      if (isDive) {
-        if (contextStack.last.isEmpty) return const <Page<Object?>>[];
-        final parentPage = contextStack.last.last;
-        final parentArgs = parentPage.meta;
-        if (parentArgs == null) return const <Page<Object?>>[];
-
-        final newChildren = <Page<Object?>>[];
-        final newArgs = parentArgs.copyWith(children: () => newChildren);
-        final newParentPage = MaterialPage<Object?>(
-          key: parentPage.key,
-          name: parentPage.name,
-          arguments: newArgs,
-          child: newArgs.route.builder(newArgs.pathParams, newArgs.queryParams),
-        );
-        contextStack.last[contextStack.last.length - 1] = newParentPage;
-        contextStack.add(newChildren);
-      } else {
-        if (contextStack.length <= 1) return const <Page<Object?>>[];
-        contextStack.removeLast();
-      }
-      remainingPath = remainingPath.substring(delimiterIndex + 2);
-    }
-
-    return contextStack.first;
-  }
-
-  NavigationState _buildStackFromPath(String path, Map<String, String> queryParams) {
-    final pages = <Page<Object?>>[];
-    var remainingPath = path;
-
-    if (remainingPath.isNotEmpty && !remainingPath.startsWith('/')) remainingPath = '/$remainingPath';
-
-    while (remainingPath.isNotEmpty && remainingPath != '/') {
-      final bestMatch = _findBestMatch(remainingPath);
-
-      if (bestMatch == null) break;
-
-      final matchedRoute = bestMatch.route;
-      final parentRoute = findParentForRoute(matchedRoute);
-
-      if (parentRoute != null) {
-        if (pages.isEmpty || (pages.last.meta)?.route != parentRoute) {
-          pages.add(parentRoute.page());
+      if (currentNode.route != null) {
+        final parentParams = <String, String>{};
+        final paramName = currentNode.parameterName;
+        if (paramName != null && params.containsKey(paramName)) {
+          // This logic assumes parent route params are a subset of child params
+          parentParams[paramName] = params[paramName]!;
         }
+        pages.add(currentNode.route!.page(pathParams: parentParams));
       }
-
-      pages.add(matchedRoute.page(pathParams: bestMatch.pathParams, queryParams: queryParams));
-
-      remainingPath = remainingPath.substring(bestMatch.matchedPath.length);
-      if (remainingPath.isNotEmpty && !remainingPath.startsWith('/')) remainingPath = '/$remainingPath';
     }
-
     return pages;
   }
 
-  String? restore(NavigationState pages) {
-    if (pages.isEmpty) return null;
+  NavigationState getParentStackFor(Routable route, Map<String, String> pathParams) {
+    String path = route.path;
+    if (path == '/') return [];
 
-    var location = collectPath(pages);
-    while (location.endsWith('!/')) {
-      location = location.substring(0, location.length - 2);
-    }
-    if (location.isEmpty) location = '/';
+    // Normalize path and get its definition segments (e.g., ['users', ':userId'])
+    path = path.replaceAll(RegExp(r'^/+|/+$'), '');
+    if (path.endsWith('+')) path = path.substring(0, path.length - 1);
 
-    final allQueryParams = <String, String>{};
-    _collectAllQueryParams(pages, allQueryParams);
+    final segments = path.split('/');
 
-    if (allQueryParams.isEmpty) return location;
+    final pages = <Page>[];
+    _TrieNode currentNode = _trieRoot;
 
-    final uri = Uri(path: location, queryParameters: allQueryParams);
-    return uri.toString();
-  }
+    // Traverse the Trie using the route's *definition* segments
+    for (int i = 0; i < segments.length - 1; i++) {
+      final segment = segments[i];
 
-  void _collectAllQueryParams(NavigationState pages, Map<String, String> accumulator) {
-    for (final page in pages) {
-      final args = page.meta;
-      if (args != null) {
-        accumulator.addAll(args.queryParams);
+      if (segment.startsWith(':')) {
+        if (currentNode.parameterChild == null) break;
+        currentNode = currentNode.parameterChild!;
+      } else {
+        if (!currentNode.children.containsKey(segment)) break;
+        currentNode = currentNode.children[segment]!;
+      }
 
-        final children = args.children;
-        if (children?.isNotEmpty == true) _collectAllQueryParams(children!, accumulator);
+      // If the node we landed on represents a complete route, it's a parent.
+      if (currentNode.route != null) {
+        // Create the parent page, extracting only the params it needs
+        // from the full set of params provided for the child route.
+        final parentParams = <String, String>{};
+        final parentRoutePath = currentNode.route!.path;
+        final parentParamNames = RegExp(r':(\w+)').allMatches(parentRoutePath).map((m) => m.group(1)!).toSet();
+
+        for (final paramName in parentParamNames) {
+          if (pathParams.containsKey(paramName)) parentParams[paramName] = pathParams[paramName]!;
+        }
+        pages.add(currentNode.route!.page(pathParams: parentParams));
       }
     }
-  }
-
-  String collectPath(NavigationState pages) {
-    if (pages.isEmpty) return '';
-
-    final buffer = StringBuffer();
-    var lastPathInThisScope = '';
-
-    for (final page in pages) {
-      final args = page.arguments;
-      if (args is! $RouteMeta) continue;
-
-      final currentPagePath = args.route.restorePathForRoute(args.pathParams);
-
-      final pathToAppend = (lastPathInThisScope.isNotEmpty &&
-              currentPagePath.startsWith(lastPathInThisScope) &&
-              currentPagePath != lastPathInThisScope)
-          ? currentPagePath.substring(lastPathInThisScope.length)
-          : currentPagePath;
-
-      buffer.write(pathToAppend);
-      lastPathInThisScope = currentPagePath;
-
-      final children = args.children;
-      if (children?.isNotEmpty == true) {
-        final childPath = collectPath(children!);
-        buffer
-          ..write('/!')
-          ..write(childPath.startsWith('/') ? childPath.substring(1) : childPath)
-          ..write('!/');
-      }
-    }
-
-    final result = buffer.toString();
-    return result.replaceAll(_doubleSlashRegex, '/');
-  }
-
-  Map<String, int> getCacheStats() => <String, int>{
-        'matchCacheSize': _matchCache.length,
-        'segmentCacheSize': _segmentCache.length,
-        'parseCacheSize': _parseCache.length,
-        'trieNodes': _countTrieNodes(),
-      };
-
-  int _countTrieNodes() {
-    var count = 0;
-
-    void traverse(_TrieNode node) {
-      count++;
-      for (final child in node.children.values) {
-        traverse(child);
-      }
-      if (node.parameterChild != null) traverse(node.parameterChild!);
-    }
-
-    traverse(_trieRoot);
-    return count;
+    return pages;
   }
 }
 
@@ -430,13 +514,13 @@ class HelmRouteInformationParser extends RouteInformationParser<NavigationState>
   @override
   Future<NavigationState> parseRouteInformation(RouteInformation routeInformation) {
     final pages = routeParser.parseUri(routeInformation.uri);
+    if (kDebugMode) pages.logNavigationState(routeInformation.uri);
     return SynchronousFuture(pages);
   }
 
   @override
   RouteInformation? restoreRouteInformation(NavigationState configuration) {
-    final location = routeParser.restore(configuration);
-    if (location == null) return null;
-    return RouteInformation(uri: Uri.parse(location));
+    final uri = routeParser.restoreUri(configuration);
+    return uri != null ? RouteInformation(uri: uri) : null;
   }
 }

@@ -8,9 +8,9 @@ void main() {
     testWidgets('switches tab on tap', (tester) async {
       await pumpTestApp(tester, initialRoute: '/shop');
       expect(find.byIcon(Icons.category), findsOneWidget);
-      await tester.tap(find.byIcon(Icons.shopping_basket));
+      await tester.tap(find.byIcon(Icons.settings));
       await tester.pumpAndSettle();
-      expect(find.text('Products'), findsOneWidget);
+      expect(find.text('Settings'), findsOneWidget);
       expect(find.text('Categories'), findsNothing);
     });
 
@@ -34,7 +34,7 @@ void main() {
 
       // The nested category screen should be restored
       expect(find.text('Category: laptops'), findsOneWidget);
-      expect(find.text('Products'), findsOneWidget);
+      expect(find.text('Settings'), findsOneWidget);
     });
   });
 }

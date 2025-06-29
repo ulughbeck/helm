@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:helm/helm.dart';
 
 enum Routes with Routable {
+  root,
   home,
   shop,
   categories,
@@ -13,24 +14,26 @@ enum Routes with Routable {
 
   @override
   String get path => switch (this) {
-        Routes.home => '/',
+        Routes.root => '/',
+        Routes.home => '/home',
         Routes.shop => '/shop',
         Routes.categories => '/category',
-        Routes.category => '/category/:id',
+        Routes.category => '/category/:cid',
         Routes.products => '/products',
-        Routes.product => '/products/:id',
+        Routes.product => '/products/:pid+',
         Routes.settings => '/settings',
         Routes.notFound => '/404',
       };
 
   @override
   Widget builder(Map<String, String> pathParams, Map<String, String> queryParams) => switch (this) {
+        Routes.root => const RootScreen(),
         Routes.home => const HomeScreen(),
         Routes.shop => ShopScreen(queryParams: queryParams),
         Routes.categories => const CategoriesScreen(),
-        Routes.category => CategoryScreen(categoryId: pathParams['id'] ?? ''),
+        Routes.category => CategoryScreen(categoryId: pathParams['cid'] ?? ''),
         Routes.products => const ProductsScreen(),
-        Routes.product => ProductScreen(productId: pathParams['id'] ?? ''),
+        Routes.product => ProductScreen(productId: pathParams['pid'] ?? ''),
         Routes.settings => const SettingsScreen(),
         Routes.notFound => const NotFoundScreen(),
       };
@@ -52,14 +55,14 @@ class _AppState extends State<App> {
       routes: Routes.values,
       guards: [
         // show not found page if no route found
-        (pages) => pages.isEmpty ? [Routes.notFound.page()] : pages,
+        // (pages) => pages.isEmpty ? [Routes.notFound.page()] : pages,
         // ensure home is always first route
-        (pages) {
-          if (pages.isNotEmpty && pages.first.name != Routes.home.path) {
-            return [Routes.home.page(), ...pages];
-          }
-          return pages;
-        },
+        // (pages) {
+        //   if (pages.isNotEmpty && pages.first.name != Routes.root.path) {
+        //     return [Routes.root.page(), ...pages];
+        //   }
+        //   return pages;
+        // },
       ],
     );
   }
@@ -74,6 +77,27 @@ class NotFoundScreen extends StatelessWidget {
   Widget build(BuildContext context) => Scaffold(appBar: AppBar(title: const Text('404 Not Found')));
 }
 
+class RootScreen extends StatelessWidget {
+  const RootScreen({super.key});
+  @override
+  Widget build(BuildContext context) => NestedTabsNavigator(
+        tabs: const [Routes.home, Routes.settings],
+        builder: (context, child, selectedIndex, onTabPressed) => Scaffold(
+          appBar: AppBar(title: Text('Root')),
+          body: child,
+          bottomNavigationBar: NavigationBar(
+            selectedIndex: selectedIndex,
+            onDestinationSelected: onTabPressed,
+            destinations: const [
+              NavigationDestination(label: 'Home Tab', icon: Icon(Icons.category)),
+              // NavigationDestination(label: 'Products Tab', icon: Icon(Icons.shopping_basket)),
+              NavigationDestination(label: 'Settings Tab', icon: Icon(Icons.settings)),
+            ],
+          ),
+        ),
+      );
+}
+
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
   @override
@@ -86,7 +110,7 @@ class HomeScreen extends StatelessWidget {
               child: const Text('Push Shop'),
             ),
             ElevatedButton(
-              onPressed: () => HelmRouter.push(context, Routes.product, pathParams: {'id': '123'}),
+              onPressed: () => HelmRouter.push(context, Routes.product, pathParams: {'pid': '123'}),
               child: const Text('Push Product 123'),
             ),
             ElevatedButton(
@@ -96,7 +120,11 @@ class HomeScreen extends StatelessWidget {
             ElevatedButton(
               onPressed: () => HelmRouter.replaceAll(context, [
                 Routes.shop.page(),
-                Routes.category.page(pathParams: {'id': 'replaced'})
+                Routes.product.page(pathParams: {'pid': '1'}),
+                Routes.product.page(pathParams: {'pid': '2'}),
+                Routes.product.page(pathParams: {'pid': '3'}),
+                Routes.product.page(pathParams: {'pid': '4'}),
+                Routes.category.page(pathParams: {'cid': 'replaced'})
               ]),
               child: const Text('Repl'),
             ),
@@ -116,8 +144,8 @@ class ShopScreen extends StatelessWidget {
   final Map<String, String> queryParams;
   @override
   Widget build(BuildContext context) => NestedTabsNavigator(
-        tabs: const [Routes.categories, Routes.products, Routes.settings],
-        initialTab: Routes.categories,
+        tabs: const [Routes.categories, Routes.settings],
+        // tabs: const [Routes.categories, Routes.products, Routes.settings],
         builder: (context, child, selectedIndex, onTabPressed) => Scaffold(
           appBar: AppBar(title: Text('Shop Query: $queryParams')),
           body: child,
@@ -126,7 +154,7 @@ class ShopScreen extends StatelessWidget {
             onDestinationSelected: onTabPressed,
             destinations: const [
               NavigationDestination(label: 'Categories Tab', icon: Icon(Icons.category)),
-              NavigationDestination(label: 'Products Tab', icon: Icon(Icons.shopping_basket)),
+              // NavigationDestination(label: 'Products Tab', icon: Icon(Icons.shopping_basket)),
               NavigationDestination(label: 'Settings Tab', icon: Icon(Icons.settings)),
             ],
           ),
@@ -141,8 +169,12 @@ class CategoriesScreen extends StatelessWidget {
         appBar: AppBar(title: const Text('Categories')),
         body: Column(children: [
           ElevatedButton(
-            onPressed: () => HelmRouter.push(context, Routes.category, pathParams: {'id': 'laptops'}),
+            onPressed: () => HelmRouter.push(context, Routes.category, pathParams: {'cid': 'laptops'}),
             child: const Text('Push Laptops'),
+          ),
+          ElevatedButton(
+            onPressed: () => HelmRouter.pop(context),
+            child: const Text('Pop'),
           ),
         ]),
       );
@@ -153,12 +185,12 @@ class CategoryScreen extends StatelessWidget {
   final String categoryId;
   @override
   Widget build(BuildContext context) => NestedNavigator(
-        initialRoute: Routes.products,
+        initialRoute: Routes.settings,
         builder: (context, child) => Scaffold(
           appBar: AppBar(title: Text('Category: $categoryId')),
           body: Column(children: [
             ElevatedButton(
-              onPressed: () => HelmRouter.push(context, Routes.product, pathParams: {'id': '999'}),
+              onPressed: () => HelmRouter.push(context, Routes.product, pathParams: {'pid': '999'}),
               child: const Text('Push nested Product 999'),
             ),
             ElevatedButton(
@@ -177,7 +209,7 @@ class ProductsScreen extends StatelessWidget {
         appBar: AppBar(title: const Text('Products')),
         body: Center(
           child: ElevatedButton(
-            onPressed: () => HelmRouter.push(context, Routes.product, pathParams: {'id': '123'}),
+            onPressed: () => HelmRouter.push(context, Routes.product, pathParams: {'pid': '123'}),
             child: const Text('Push Product 123'),
           ),
         ),
@@ -192,7 +224,7 @@ class ProductScreen extends StatelessWidget {
         appBar: AppBar(title: Text('Product: $productId')),
         body: Center(
           child: ElevatedButton(
-            onPressed: () => HelmRouter.push(context, Routes.product, pathParams: {'id': '321'}),
+            onPressed: () => HelmRouter.push(context, Routes.product, pathParams: {'pid': '321'}),
             child: const Text('Push Product 321'),
           ),
         ),

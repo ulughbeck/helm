@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
-import 'app.dart';
+import 'example.dart';
 
 void main() {
   runZonedGuarded<void>(

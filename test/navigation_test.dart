@@ -41,7 +41,7 @@ void main() {
       HelmRouter.replaceAll(context, [
         Routes.shop.page(),
         Routes.categories.page(),
-        Routes.category.page(pathParams: {'id': 'replaced'})
+        Routes.category.page(pathParams: {'cid': 'replaced'})
       ]);
       await tester.pumpAndSettle();
 

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import 'route.dart';
 import 'router.dart';
+import 'state.dart';
 
 class NestedNavigator extends StatefulWidget {
   const NestedNavigator({
@@ -49,7 +50,7 @@ class _NestedNavigatorState extends State<NestedNavigator> {
 
       final parentRouteName = parentRoute.settings.name;
       if (parentRouteName == null) {
-        if (kDebugMode) log('Warning: Parent route name is null in NestedNavigator');
+        if (kDebugMode) log('Warning: Parent route name is null in NestedNavigator', name: 'HelmRouter');
         return;
       }
 
@@ -64,7 +65,7 @@ class _NestedNavigatorState extends State<NestedNavigator> {
         delegate.prepareNestedNavigator(parentRouteName);
       }
     } catch (e) {
-      if (kDebugMode) log('Error initializing NestedNavigator: $e');
+      if (kDebugMode) log('Error initializing NestedNavigator: $e', name: 'HelmRouter');
     }
   }
 
@@ -108,7 +109,7 @@ class _NestedNavigatorState extends State<NestedNavigator> {
               ),
             );
           } catch (e) {
-            if (kDebugMode) log('Error building NestedNavigator: $e');
+            if (kDebugMode) log('Error building NestedNavigator: $e', name: 'HelmRouter');
             return widget.builder(context, const SizedBox.shrink());
           }
         },
@@ -208,7 +209,7 @@ class _NestedTabsNavigatorState extends State<NestedTabsNavigator> {
         delegate.replaceNestedStack(parentName, [initialTab.page()]);
       }
     } catch (e) {
-      if (kDebugMode) log('Error initializing NestedTabsNavigator: $e');
+      if (kDebugMode) log('Error initializing NestedTabsNavigator: $e', name: 'HelmRouter');
     } finally {
       _isInitializing = false;
     }
@@ -265,7 +266,7 @@ class _NestedTabsNavigatorState extends State<NestedTabsNavigator> {
             final parentArgs = parentRoute?.settings.arguments;
 
             if (parentArgs is! $RouteMeta) {
-              if (kDebugMode) log('Warning: Parent args is null in NestedTabsNavigator');
+              if (kDebugMode) log('Warning: Parent args is null in NestedTabsNavigator', name: 'HelmRouter');
               return const SizedBox.shrink();
             }
 
@@ -315,7 +316,7 @@ class _NestedTabsNavigatorState extends State<NestedTabsNavigator> {
               _onTabPressed,
             );
           } catch (e) {
-            if (kDebugMode) log('Error building NestedTabsNavigator: $e');
+            if (kDebugMode) log('Error building NestedTabsNavigator: $e', name: 'HelmRouter');
             return widget.builder(context, const SizedBox.shrink(), _activeIndex, _onTabPressed);
           }
         },
