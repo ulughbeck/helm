@@ -3,6 +3,7 @@ import 'package:flutter/widgets.dart';
 
 import 'delegate.dart';
 import 'initial_uri_provider.dart';
+import 'logger.dart';
 import 'parser.dart';
 import 'route.dart';
 import 'state.dart';
@@ -14,13 +15,14 @@ class HelmRouter extends RouterConfig<NavigationState> {
     List<NavigationGuard> guards = const <NavigationGuard>[],
     List<NavigatorObserver> observers = const <NavigatorObserver>[],
     TransitionDelegate<Object?> defaultTransitionDelegate = const DefaultTransitionDelegate<Object?>(),
-    Listenable? revalidate,
+    Listenable? refresh,
+    bool enableLogs = kDebugMode,
   }) {
     assert(() {
       if (routes.isEmpty) throw ArgumentError('Routes list cannot be empty');
       final seenPaths = <String>{};
       final seenParams = <String>{};
-      final paramRegex = RegExp(r':(\w+)\+?');
+      final paramRegex = RegExp(r'\{(\w+)\+?\}');
 
       for (final route in routes) {
         final path = route.path;
@@ -32,17 +34,19 @@ class HelmRouter extends RouterConfig<NavigationState> {
           final paramName = match.group(1);
           if (paramName != null && !seenParams.add(paramName)) {
             throw ArgumentError(
-                'Duplicate path parameter name found: ":$paramName". Parameter names must be unique across all routes.');
+                'Duplicate path parameter name found: "{$paramName}". Parameter names must be unique across all routes.');
           }
         }
       }
       return true;
     }());
 
+    enableLogs ? HelmLogger.on() : HelmLogger.off();
+
     final routeParser = HelmRouteParser(routes);
     final delegate = HelmRouterDelegate(
       guards: guards,
-      revalidate: revalidate,
+      revalidate: refresh,
       observers: observers,
       defaultTransitionDelegate: defaultTransitionDelegate,
       routeParser: routeParser,
@@ -113,12 +117,10 @@ class HelmRouter extends RouterConfig<NavigationState> {
         // Case 2: This is a different route. Build the full parent stack.
         final parentPages = parser.getParentStackFor(route, pathParams);
         for (final parentPage in parentPages) {
-          // Only add a parent if it's not already the last page on the stack.
           if (lastPageOnStack == null || parentPage.name != lastPageOnStack.name) {
             pagesToAdd.add(parentPage);
           }
         }
-        // And finally, add the target page itself.
         pagesToAdd.add(route.page(pathParams: pathParams, queryParams: queryParams));
       }
 
@@ -162,4 +164,38 @@ class HelmRouter extends RouterConfig<NavigationState> {
     Map<String, String> queryParams = const <String, String>{},
   }) =>
       delegateOf(context).change((_) => <Page<Object?>>[route.page(pathParams: pathParams, queryParams: queryParams)]);
+
+  static void changeQueryParams(BuildContext context, {required Map<String, String?> queryParams}) =>
+      delegateOf(context).change((current) {
+        NavigationState updateRecursive(NavigationState pages) {
+          return pages.map((page) {
+            final meta = page.meta;
+            if (meta == null) return page;
+
+            final updatedQueryParams = Map<String, String>.from(meta.queryParams);
+            queryParams.forEach((key, value) {
+              if (value == null) {
+                updatedQueryParams.remove(key);
+              } else {
+                updatedQueryParams[key] = value;
+              }
+            });
+
+            final updatedChildren = meta.children != null ? updateRecursive(meta.children!) : null;
+            final queryChanged = !mapEquals(meta.queryParams, updatedQueryParams);
+            final childrenChanged = updatedChildren != null && !listEquals(meta.children, updatedChildren);
+
+            if (!queryChanged && !childrenChanged) return page;
+
+            final newMeta = meta.copyWith(
+              queryParams: updatedQueryParams,
+              children: childrenChanged ? () => updatedChildren : null,
+            );
+
+            return meta.route.build(page.key, page.name!, newMeta);
+          }).toList();
+        }
+
+        return updateRecursive(current);
+      });
 }

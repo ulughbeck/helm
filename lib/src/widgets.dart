@@ -3,6 +3,7 @@ import 'dart:developer';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import 'logger.dart';
 import 'route.dart';
 import 'router.dart';
 import 'state.dart';
@@ -27,6 +28,8 @@ class NestedNavigator extends StatefulWidget {
 }
 
 class _NestedNavigatorState extends State<NestedNavigator> {
+  final _navigationKey = GlobalKey<NavigatorState>();
+
   bool _initialized = false;
 
   @override
@@ -50,7 +53,7 @@ class _NestedNavigatorState extends State<NestedNavigator> {
 
       final parentRouteName = parentRoute.settings.name;
       if (parentRouteName == null) {
-        if (kDebugMode) log('Warning: Parent route name is null in NestedNavigator', name: 'HelmRouter');
+        HelmLogger.error('Warning: Parent route name is null in NestedNavigator');
         return;
       }
 
@@ -65,12 +68,14 @@ class _NestedNavigatorState extends State<NestedNavigator> {
         delegate.prepareNestedNavigator(parentRouteName);
       }
     } catch (e) {
-      if (kDebugMode) log('Error initializing NestedNavigator: $e', name: 'HelmRouter');
+      HelmLogger.error('Error initializing NestedNavigator: $e');
     }
   }
 
   @pragma('vm:prefer-inline')
-  void _onDidRemovePage(Page<Object?> page) => HelmRouter.pop(context);
+  void _onDidRemovePage(Page<Object?> page) {
+    if (mounted) HelmRouter.delegateOf(context).onDidRemovePage(page);
+  }
 
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
@@ -79,13 +84,13 @@ class _NestedNavigatorState extends State<NestedNavigator> {
           try {
             final parentRoute = ModalRoute.of(context);
             if (parentRoute == null) {
-              if (kDebugMode) log('Warning: Parent route is null in NestedNavigator');
+              HelmLogger.error('Warning: Parent route is null in NestedNavigator');
               return widget.builder(context, const SizedBox.shrink());
             }
 
             final parentArgs = parentRoute.settings.arguments;
             if (parentArgs is! $RouteMeta) {
-              if (kDebugMode) log('Warning: Parent args is null in NestedNavigator');
+              HelmLogger.error('Warning: Parent args is null in NestedNavigator');
               return widget.builder(context, const SizedBox.shrink());
             }
 
@@ -94,22 +99,16 @@ class _NestedNavigatorState extends State<NestedNavigator> {
               return widget.builder(context, const SizedBox.shrink());
             }
 
-            final keyBuffer = StringBuffer();
-            for (var i = 0; i < nestedPages.length; i++) {
-              if (i > 0) keyBuffer.write(',');
-              keyBuffer.write(nestedPages[i].name);
-            }
-
             return widget.builder(
               context,
               Navigator(
-                key: ValueKey(keyBuffer.toString()),
+                key: _navigationKey,
                 pages: nestedPages,
                 onDidRemovePage: _onDidRemovePage,
               ),
             );
           } catch (e) {
-            if (kDebugMode) log('Error building NestedNavigator: $e', name: 'HelmRouter');
+            HelmLogger.error('Error building NestedNavigator: $e');
             return widget.builder(context, const SizedBox.shrink());
           }
         },
@@ -150,6 +149,8 @@ class NestedTabsNavigator extends StatefulWidget {
 }
 
 class _NestedTabsNavigatorState extends State<NestedTabsNavigator> {
+  final _navigationKey = GlobalKey<NavigatorState>();
+
   late final Map<Routable, NavigationState> _tabStacks;
   late final Map<String, int> _pathToIndexCache;
   late int _activeIndex;
@@ -216,6 +217,30 @@ class _NestedTabsNavigatorState extends State<NestedTabsNavigator> {
   }
 
   @pragma('vm:prefer-inline')
+  void _handleEmptyState(ModalRoute<Object?>? parentRoute) {
+    if (_isInitializing) return;
+    // Handle empty state with post-frame callback for initialization
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _isInitializing) return;
+      _isInitializing = true;
+
+      try {
+        final currentArgs = parentRoute?.settings.arguments;
+        if (currentArgs is $RouteMeta && (currentArgs.children?.isEmpty ?? true)) {
+          final parentName = parentRoute?.settings.name;
+          if (parentName != null && _activeIndex < widget.tabs.length) {
+            final tabToReset = widget.tabs[_activeIndex];
+            final delegate = HelmRouter.delegateOf(context);
+            delegate.replaceNestedStack(parentName, [tabToReset.page()]);
+          }
+        }
+      } finally {
+        _isInitializing = false;
+      }
+    });
+  }
+
+  @pragma('vm:prefer-inline')
   int _calculateActiveIndex(NavigationState nestedPages) {
     if (nestedPages.isEmpty) return 0;
     final firstPageName = nestedPages.first.name;
@@ -255,7 +280,9 @@ class _NestedTabsNavigatorState extends State<NestedTabsNavigator> {
   }
 
   @pragma('vm:prefer-inline')
-  void _onDidRemoveTabPage(Page<Object?> page) => HelmRouter.pop(context);
+  void _onDidRemovePage(Page<Object?> page) {
+    if (mounted) HelmRouter.delegateOf(context).onDidRemovePage(page);
+  }
 
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
@@ -266,57 +293,30 @@ class _NestedTabsNavigatorState extends State<NestedTabsNavigator> {
             final parentArgs = parentRoute?.settings.arguments;
 
             if (parentArgs is! $RouteMeta) {
-              if (kDebugMode) log('Warning: Parent args is null in NestedTabsNavigator', name: 'HelmRouter');
+              HelmLogger.error('Warning: Parent args is null in NestedTabsNavigator');
               return const SizedBox.shrink();
             }
 
             final nestedPages = parentArgs.children;
-
             if (nestedPages == null || nestedPages.isEmpty) {
-              // Handle empty state with post-frame callback for initialization
-              if (!_isInitializing) {
-                WidgetsBinding.instance.addPostFrameCallback((_) {
-                  if (!mounted || _isInitializing) return;
-                  _isInitializing = true;
-
-                  try {
-                    final currentArgs = parentRoute?.settings.arguments;
-                    if (currentArgs is $RouteMeta && (currentArgs.children?.isEmpty ?? true)) {
-                      final parentName = parentRoute?.settings.name;
-                      if (parentName != null && _activeIndex < widget.tabs.length) {
-                        final tabToReset = widget.tabs[_activeIndex];
-                        final delegate = HelmRouter.delegateOf(context);
-                        delegate.replaceNestedStack(parentName, [tabToReset.page()]);
-                      }
-                    }
-                  } finally {
-                    _isInitializing = false;
-                  }
-                });
-              }
+              _handleEmptyState(parentRoute);
               return widget.builder(context, const SizedBox.shrink(), _activeIndex, _onTabPressed);
             }
 
             _activeIndex = _calculateActiveIndex(nestedPages);
 
-            final keyBuffer = StringBuffer();
-            for (var i = 0; i < nestedPages.length; i++) {
-              if (i > 0) keyBuffer.write(',');
-              keyBuffer.write(nestedPages[i].name);
-            }
-
             return widget.builder(
               context,
               Navigator(
-                key: ValueKey(keyBuffer.toString()),
+                key: _navigationKey,
                 pages: nestedPages,
-                onDidRemovePage: _onDidRemoveTabPage,
+                onDidRemovePage: _onDidRemovePage,
               ),
               _activeIndex,
               _onTabPressed,
             );
           } catch (e) {
-            if (kDebugMode) log('Error building NestedTabsNavigator: $e', name: 'HelmRouter');
+            HelmLogger.error('Error building NestedTabsNavigator: $e');
             return widget.builder(context, const SizedBox.shrink(), _activeIndex, _onTabPressed);
           }
         },

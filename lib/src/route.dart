@@ -1,9 +1,8 @@
-import 'dart:developer';
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart' show MaterialPage;
 import 'package:flutter/widgets.dart';
 
+import 'logger.dart';
 import 'state.dart';
 
 /// A mixin that defines the contract for a route.
@@ -40,27 +39,24 @@ mixin Routable {
     return build(key, name, args);
   }
 
-  bool get isArbitrary => path.contains('+');
+  bool get isArbitrary => path.contains('+}') && path.contains('{');
 
-  static final RegExp _paramRegex = RegExp(r':\w+');
+  static final RegExp _paramRegex = RegExp(r'\{[^}]+\}');
 
   String restorePathForRoute(Map<String, String> pathParams) {
     var templatePath = path;
-    if (templatePath.contains('+')) {
-      templatePath = templatePath.substring(0, templatePath.length - 1);
-    }
 
     if (pathParams.isEmpty) {
-      if (kDebugMode && templatePath.contains(':')) _logMissingParams(templatePath);
-      return templatePath.contains(':') ? templatePath.replaceAll(_paramRegex, '-') : templatePath;
+      if (kDebugMode && templatePath.contains('{')) _logMissingParams(templatePath);
+      return templatePath.contains('{') ? templatePath.replaceAll(_paramRegex, '-') : templatePath;
     }
 
     var result = templatePath;
     pathParams.forEach((key, value) {
-      result = result.replaceFirst(':$key', value);
+      result = result.replaceAll(RegExp(r'\{' + key + r'\+?\}'), value);
     });
 
-    if (result.contains(':')) {
+    if (result.contains('{')) {
       if (kDebugMode) _logMissingParams(result);
       result = result.replaceAll(_paramRegex, '-');
     }
@@ -72,7 +68,7 @@ mixin Routable {
     final matches = _paramRegex.allMatches(pathWithParams);
     if (matches.isNotEmpty) {
       final missingParams = matches.map((m) => m.group(0)).join(', ');
-      log('Route for path "$path" is missing required parameter(s): "$missingParams"', name: 'HelmRouter');
+      HelmLogger.error('Route for path "$path" is missing required parameter(s): "$missingParams"');
     }
   }
 }

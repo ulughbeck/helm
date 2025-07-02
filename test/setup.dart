@@ -44,9 +44,9 @@ enum Routes with Routable {
         Routes.home => '/',
         Routes.shop => '/shop',
         Routes.categories => '/category',
-        Routes.category => '/category/:cid',
+        Routes.category => '/category/{cid}',
         Routes.products => '/products',
-        Routes.product => '/products/:pid',
+        Routes.product => '/products/{pid}',
         Routes.settings => '/settings',
         Routes.notFound => '/404',
       };

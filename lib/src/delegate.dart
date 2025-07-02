@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:collection';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 
+import 'logger.dart';
 import 'parser.dart';
 import 'route.dart';
 import 'state.dart';
@@ -28,7 +30,9 @@ class HelmRouterDelegate extends RouterDelegate<NavigationState>
   final _PerRouteTransitionDelegate _transitionDelegate;
   final HelmRouteParser routeParser;
 
-  NavigationState _pages = const [];
+  NavigationState _pages = const <Page<Object?>>[];
+  bool _revalidationNeeded = false;
+  bool _mounted = true;
 
   @override
   final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
@@ -50,11 +54,14 @@ class HelmRouterDelegate extends RouterDelegate<NavigationState>
     final guardedPages = _applyGuards(newPages);
     if (listEquals(_pages, guardedPages)) return;
     _pages = UnmodifiableListView(guardedPages);
-    if (kDebugMode) _pages.logNavigationState();
+    HelmLogger.msg(_pages.toPrettyString());
     notifyListeners();
   }
 
-  void _revalidateState() => change((state) => state);
+  void _revalidateState() {
+    _revalidationNeeded = true;
+    notifyListeners();
+  }
 
   void prepareNestedNavigator(String parentRouteName) =>
       change((current) => _prepareNestedNavigatorRecursive(current, parentRouteName));
@@ -230,10 +237,11 @@ class HelmRouterDelegate extends RouterDelegate<NavigationState>
     return null;
   }
 
-  void _onDidRemovePage(Page<Object?> page) => change((current) => _removePage(current, page) ?? current);
+  void onDidRemovePage(Page<Object?> page) => change((current) => _removePage(current, page) ?? current);
 
   @override
   void dispose() {
+    _mounted = false;
     revalidate?.removeListener(_revalidateState);
     _transitionDelegate.dispose();
     super.dispose();
@@ -241,13 +249,19 @@ class HelmRouterDelegate extends RouterDelegate<NavigationState>
 
   @override
   Widget build(BuildContext context) {
+    if (_revalidationNeeded) {
+      _revalidationNeeded = false;
+      scheduleMicrotask(() {
+        if (_mounted) change((state) => state);
+      });
+    }
     if (_pages.isEmpty) return const SizedBox.shrink();
     return Navigator(
       key: navigatorKey,
       pages: _pages,
       transitionDelegate: _transitionDelegate,
       observers: observers,
-      onDidRemovePage: _onDidRemovePage,
+      onDidRemovePage: onDidRemovePage,
     );
   }
 }

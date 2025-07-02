@@ -1,8 +1,7 @@
-import 'dart:developer';
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 
+import 'logger.dart';
 import 'route.dart';
 import 'state.dart';
 
@@ -123,9 +122,7 @@ class HelmRouteParser {
           break;
 
         case _TokenType.terminator:
-          // Terminators are handled within _matchPathToPages,
-          // seeing one here means it's likely misplaced.
-          log('Warning: Encountered unexpected terminator token. Ignoring.', name: 'HelmRouter');
+          HelmLogger.error('Warning: Encountered unexpected terminator token. Ignoring.');
           tokenIndex++;
           break;
       }
@@ -167,18 +164,16 @@ class HelmRouteParser {
     if (contextStack.length <= 1) throw Exception('Cannot rise: already at the root of the navigation stack.');
     contextStack.removeLast();
   }
-// In class HelmRouteParser
 
   ({NavigationState pages, int nextTokenIndex}) _matchPathToPages(List<_Token> tokens, int startIndex) {
     final pages = <Page>[];
     int currentIndex = startIndex;
 
     while (currentIndex < tokens.length && tokens[currentIndex].type == _TokenType.pathSegment) {
-      // 1. Get the list of remaining path segments to match against without advancing the main index.
+      // 1. Get the list of remaining path segments to match against.
       final remainingSegments =
           tokens.sublist(currentIndex).takeWhile((t) => t.type == _TokenType.pathSegment).map((t) => t.value).toList();
 
-      // Should not happen due to the while loop condition, but safe to have.
       if (remainingSegments.isEmpty) break;
 
       // 2. Find the best match for the start of the remaining path segments.
@@ -190,8 +185,6 @@ class HelmRouteParser {
           endOfBlockIndex++;
         }
         currentIndex = endOfBlockIndex;
-
-        // Break the loop to return whatever pages we have found so far.
         break;
       }
 
@@ -200,19 +193,18 @@ class HelmRouteParser {
       final consumedCount = bestMatch.segmentsConsumed;
       final matchedSegments = remainingSegments.sublist(0, consumedCount);
 
-      // 3. Handle Implicit Parent Routes by looking at the segments we consumed.
+      // 3. Add any implicit parent routes for the first matched segment.
       pages.addAll(findParentPages(matchedSegments, params));
 
       // 4. Add the matched page itself.
       pages.add(matchedRoute.page(pathParams: params));
 
       // 5. Advance the main `currentIndex` by the number of segments the match consumed.
-      //    Since we now guard against consumedCount == 0, this is always safe.
       currentIndex += consumedCount;
 
-      // 6. Handle Arbitrary (+) Routes
-      if (matchedRoute.path.endsWith('+')) {
-        final paramName = RegExp(r':(\w+)\+').firstMatch(matchedRoute.path)!.group(1)!;
+      // 6. Handle arbitrary routes.
+      if (matchedRoute.isArbitrary) {
+        final paramName = RegExp(r'\{(\w+)\+\}').firstMatch(matchedRoute.path)!.group(1)!;
         while (currentIndex < tokens.length && tokens[currentIndex].type == _TokenType.pathSegment) {
           final segmentValue = tokens[currentIndex].value;
           pages.add(matchedRoute.page(pathParams: {paramName: segmentValue}));
@@ -276,8 +268,8 @@ class HelmRouteParser {
     final allQueryParams = <String, String>{};
     _collectAllQueryParams(configuration, allQueryParams);
 
-    if (kDebugMode) log('Inner Path: $internalPath', name: 'HelmRouter');
-    if (kDebugMode) log('Final Path: $cleanPath', name: 'HelmRouter');
+    HelmLogger.msg('Inner Path: $internalPath');
+    HelmLogger.msg('Final Path: $cleanPath');
     return Uri(path: cleanPath, queryParameters: allQueryParams.isEmpty ? null : allQueryParams);
   }
 
@@ -292,26 +284,20 @@ class HelmRouteParser {
       if (meta == null) continue;
 
       final currentRoute = meta.route;
-      final isArbitrary = currentRoute.path.endsWith('+');
+      final isArbitrary = currentRoute.isArbitrary;
 
-      // Check for end of an arbitrary sequence
-      if (inArbitrarySequence && currentRoute != lastRoute) {
-        buffer.write('~');
-        inArbitrarySequence = false;
-      }
-
-      // Handle continuation of an arbitrary sequence
-      if (inArbitrarySequence && currentRoute == lastRoute) {
-        final paramName = RegExp(r':(\w+)\+').firstMatch(currentRoute.path)!.group(1)!;
+      if (inArbitrarySequence && isArbitrary && currentRoute.path == lastRoute?.path) {
+        final paramName = RegExp(r'\{(\w+)\+\}').firstMatch(currentRoute.path)!.group(1)!;
         final paramValue = meta.pathParams[paramName];
         if (paramValue != null) buffer.write('/$paramValue');
+        lastRestoredPath = '';
       } else {
-        // Handle a regular page or the first page in a sequence
+        if (inArbitrarySequence) buffer.write('~');
+
         final restoredPath = currentRoute.restorePathForRoute(meta.pathParams);
         final isRootPageWithChildren = restoredPath == '/' && meta.children != null && meta.children!.isNotEmpty;
 
         if (!isRootPageWithChildren) {
-          // This is the corrected logic block
           if (lastRestoredPath.isNotEmpty &&
               restoredPath.startsWith(lastRestoredPath) &&
               restoredPath.length > lastRestoredPath.length) {
@@ -324,7 +310,6 @@ class HelmRouteParser {
             }
             buffer.write(pathSegmentToWrite);
           }
-          // Update the last path to the full path of the route we just processed.
           lastRestoredPath = restoredPath;
         }
       }
@@ -332,7 +317,6 @@ class HelmRouteParser {
       lastRoute = currentRoute;
       inArbitrarySequence = isArbitrary;
 
-      // Handle children recursively
       if (meta.children != null && meta.children!.isNotEmpty) {
         if (inArbitrarySequence) {
           buffer.write('~');
@@ -377,8 +361,8 @@ class HelmRouteParser {
       final segments = route.path.replaceAll(RegExp(r'^/+|/+$'), '').split('/');
 
       for (final segment in segments) {
-        if (segment.startsWith(':')) {
-          var paramName = segment.substring(1);
+        if (segment.startsWith('{') && segment.endsWith('}')) {
+          var paramName = segment.substring(1, segment.length - 1);
           var isArbitrary = false;
           if (paramName.endsWith('+')) {
             paramName = paramName.substring(0, paramName.length - 1);
@@ -448,14 +432,13 @@ class HelmRouteParser {
       } else if (currentNode.parameterChild != null) {
         currentNode = currentNode.parameterChild!;
       } else {
-        break; // Should not happen for a valid match
+        break;
       }
 
       if (currentNode.route != null) {
         final parentParams = <String, String>{};
         final paramName = currentNode.parameterName;
         if (paramName != null && params.containsKey(paramName)) {
-          // This logic assumes parent route params are a subset of child params
           parentParams[paramName] = params[paramName]!;
         }
         pages.add(currentNode.route!.page(pathParams: parentParams));
@@ -468,7 +451,7 @@ class HelmRouteParser {
     String path = route.path;
     if (path == '/') return [];
 
-    // Normalize path and get its definition segments (e.g., ['users', ':userId'])
+    // Normalize path and get its definition segments
     path = path.replaceAll(RegExp(r'^/+|/+$'), '');
     if (path.endsWith('+')) path = path.substring(0, path.length - 1);
 
@@ -481,7 +464,7 @@ class HelmRouteParser {
     for (int i = 0; i < segments.length - 1; i++) {
       final segment = segments[i];
 
-      if (segment.startsWith(':')) {
+      if (segment.startsWith('{') && segment.endsWith('}')) {
         if (currentNode.parameterChild == null) break;
         currentNode = currentNode.parameterChild!;
       } else {
@@ -491,11 +474,9 @@ class HelmRouteParser {
 
       // If the node we landed on represents a complete route, it's a parent.
       if (currentNode.route != null) {
-        // Create the parent page, extracting only the params it needs
-        // from the full set of params provided for the child route.
         final parentParams = <String, String>{};
         final parentRoutePath = currentNode.route!.path;
-        final parentParamNames = RegExp(r':(\w+)').allMatches(parentRoutePath).map((m) => m.group(1)!).toSet();
+        final parentParamNames = RegExp(r'\{(\w+)\+?\}').allMatches(parentRoutePath).map((m) => m.group(1)!).toSet();
 
         for (final paramName in parentParamNames) {
           if (pathParams.containsKey(paramName)) parentParams[paramName] = pathParams[paramName]!;
@@ -514,7 +495,7 @@ class HelmRouteInformationParser extends RouteInformationParser<NavigationState>
   @override
   Future<NavigationState> parseRouteInformation(RouteInformation routeInformation) {
     final pages = routeParser.parseUri(routeInformation.uri);
-    if (kDebugMode) pages.logNavigationState(routeInformation.uri);
+    HelmLogger.msg(pages.toPrettyString(routeInformation.uri));
     return SynchronousFuture(pages);
   }
 
