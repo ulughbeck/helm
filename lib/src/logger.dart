@@ -2,7 +2,7 @@ import 'dart:developer';
 
 import 'package:flutter/foundation.dart';
 
-///
+/// Logger for router-related messages, enabled by default in debug mode.
 abstract class HelmLogger {
   static bool _isEnabled = kDebugMode;
 
@@ -13,7 +13,5 @@ abstract class HelmLogger {
     if (_isEnabled) log(message, name: 'HelmRouter');
   }
 
-  static void error(String message) {
-    log(message, name: 'HelmRouter');
-  }
+  static void error(String message) => log(message, name: 'HelmRouter');
 }

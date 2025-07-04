@@ -6,7 +6,7 @@ import 'route.dart';
 typedef NavigationState = List<Page<Object?>>;
 
 extension $NavigationStateUtils on NavigationState {
-  /// returns last page that is equal to route provided
+  /// Searches from the deepest, last-active page upwards and returns the **first** page that matches the provided [route].
   Page<Object?>? findByRoute(Routable route) {
     for (int i = length - 1; i >= 0; i--) {
       final page = this[i];
@@ -23,8 +23,7 @@ extension $NavigationStateUtils on NavigationState {
     return null;
   }
 
-  /// Searches from the deepest, last-active page upwards and removes the
-  /// **first** page that matches the provided [route].
+  /// Searches from the deepest, last-active page upwards and removes the **first** page that matches the provided [route].
   NavigationState removeByRoute(Routable route) {
     ({NavigationState newPages, bool didRemove}) removeFirstRecursive(NavigationState pages, Routable route) {
       for (int i = pages.length - 1; i >= 0; i--) {
@@ -60,10 +59,8 @@ extension $NavigationStateUtils on NavigationState {
 
   /// Removes all pages matching the provided [route].
   ///
-  /// - if `recursive` is `false` (default): Removes all matching pages from
-  ///   the deepest, last-active child stack only.
-  /// - if `recursive` is `true`: Removes all matching pages from all levels
-  ///   of the entire navigation stack.
+  /// - if `recursive` is `false`: Removes all matching pages from the deepest, last-active child stack only.
+  /// - if `recursive` is `true`: Removes all matching pages from all levels of the entire navigation stack.
   NavigationState removeAllByRoute(Routable route, {bool recursive = false}) {
     NavigationState removeAllRecursive(NavigationState pages, Routable route) {
       final List<Page<Object?>> result = [];

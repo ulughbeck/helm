@@ -12,6 +12,7 @@ import 'state.dart';
 /// A type alias for a navigation guard, a function that can transform the page stack.
 typedef NavigationGuard = NavigationState Function(NavigationState pages);
 
+/// The core state manager for the router; it holds the page stack and builds the `Navigator`.
 class HelmRouterDelegate extends RouterDelegate<NavigationState>
     with ChangeNotifier, PopNavigatorRouterDelegateMixin<NavigationState> {
   HelmRouterDelegate({
@@ -34,11 +35,52 @@ class HelmRouterDelegate extends RouterDelegate<NavigationState>
   bool _revalidationNeeded = false;
   bool _mounted = true;
 
+  // CORE
+
   @override
   final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
+  Uri? currentUri;
+
   @override
   NavigationState get currentConfiguration => _pages;
+
+  Map<String, String> get currentQueryParams {
+    final allQueryParams = <String, String>{};
+    void collect(NavigationState pages) {
+      for (final page in pages) {
+        final meta = page.meta;
+        if (meta != null) {
+          allQueryParams.addAll(meta.queryParams);
+          if (meta.children != null) {
+            collect(meta.children!);
+          }
+        }
+      }
+    }
+
+    collect(_pages);
+    return allQueryParams;
+  }
+
+  @override
+  Future<void> setNewRoutePath(NavigationState pages) {
+    final newPages = _applyGuards(pages);
+    if (listEquals(_pages, newPages)) return SynchronousFuture(null);
+    _pages = UnmodifiableListView(newPages);
+    currentUri = routeParser.restoreUri(_pages);
+    return SynchronousFuture(null);
+  }
+
+  void change(NavigationGuard fn) {
+    final newPages = fn(NavigationState.from(_pages));
+    final guardedPages = _applyGuards(newPages);
+    if (listEquals(_pages, guardedPages)) return;
+    _pages = UnmodifiableListView(guardedPages);
+    currentUri = routeParser.restoreUri(_pages);
+    notifyListeners();
+    HelmLogger.msg(_pages.toPrettyString());
+  }
 
   NavigationState _applyGuards(NavigationState pages) {
     if (guards.isEmpty) return pages;
@@ -49,19 +91,12 @@ class HelmRouterDelegate extends RouterDelegate<NavigationState>
     return current;
   }
 
-  void change(NavigationState Function(NavigationState) fn) {
-    final newPages = fn(NavigationState.from(_pages));
-    final guardedPages = _applyGuards(newPages);
-    if (listEquals(_pages, guardedPages)) return;
-    _pages = UnmodifiableListView(guardedPages);
-    HelmLogger.msg(_pages.toPrettyString());
-    notifyListeners();
-  }
-
   void _revalidateState() {
     _revalidationNeeded = true;
     notifyListeners();
   }
+
+  // NESTED NAVIGATORS
 
   void prepareNestedNavigator(String parentRouteName) =>
       change((current) => _prepareNestedNavigatorRecursive(current, parentRouteName));
@@ -159,13 +194,7 @@ class HelmRouterDelegate extends RouterDelegate<NavigationState>
     return pages;
   }
 
-  @override
-  Future<void> setNewRoutePath(NavigationState pages) {
-    final newPages = _applyGuards(pages);
-    if (listEquals(_pages, newPages)) return SynchronousFuture(null);
-    _pages = UnmodifiableListView(newPages);
-    return SynchronousFuture(null);
-  }
+  // POP
 
   @override
   Future<bool> popRoute() {

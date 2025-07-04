@@ -10,6 +10,8 @@ enum Routes with Routable {
   products,
   product,
   settings,
+  someDialog,
+  someSheet,
   notFound;
 
   @override
@@ -22,7 +24,16 @@ enum Routes with Routable {
         Routes.products => '/products',
         Routes.product => '/products/{pid+}',
         Routes.settings => '/settings',
+        Routes.someDialog => '/dialog',
+        Routes.someSheet => '/sheet',
         Routes.notFound => '/404',
+      };
+
+  @override
+  PageType get pageType => switch (this) {
+        Routes.someDialog => PageType.dialog,
+        Routes.someSheet => PageType.bottomSheet,
+        _ => PageType.material,
       };
 
   @override
@@ -35,6 +46,8 @@ enum Routes with Routable {
         Routes.products => const ProductsScreen(),
         Routes.product => ProductScreen(productId: pathParams['pid'] ?? ''),
         Routes.settings => const SettingsScreen(),
+        Routes.someDialog => const SomeDialog(),
+        Routes.someSheet => const SomeSheet(),
         Routes.notFound => const NotFoundScreen(),
       };
 }
@@ -55,7 +68,7 @@ class _AppState extends State<App> {
       routes: Routes.values,
       guards: [
         // show not found page if no route found
-        // (pages) => pages.isEmpty ? [Routes.notFound.page()] : pages,
+        (pages) => pages.isEmpty ? [Routes.notFound.page()] : pages,
         // ensure home is always first route
         // (pages) {
         //   if (pages.isNotEmpty && pages.first.name != Routes.root.path) {
@@ -71,10 +84,37 @@ class _AppState extends State<App> {
   Widget build(BuildContext context) => MaterialApp.router(routerConfig: router);
 }
 
+class SomeDialog extends StatelessWidget {
+  const SomeDialog({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      child: Center(
+        child: Text('dialog'),
+      ),
+    );
+  }
+}
+
+class SomeSheet extends StatelessWidget {
+  const SomeSheet({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Text('sheet');
+  }
+}
+
 class NotFoundScreen extends StatelessWidget {
   const NotFoundScreen({super.key});
   @override
-  Widget build(BuildContext context) => Scaffold(appBar: AppBar(title: const Text('404 Not Found')));
+  Widget build(BuildContext context) => Scaffold(
+        appBar: AppBar(title: const Text('404 Not Found')),
+        body: Center(
+          child: Text(HelmRouter.currentUri(context).toString()),
+        ),
+      );
 }
 
 class RootScreen extends StatelessWidget {
@@ -108,6 +148,14 @@ class HomeScreen extends StatelessWidget {
             ElevatedButton(
               onPressed: () => HelmRouter.push(context, Routes.shop),
               child: const Text('Push Shop'),
+            ),
+            ElevatedButton(
+              onPressed: () => HelmRouter.push(context, Routes.someDialog, rootNavigator: true),
+              child: const Text('Push dialog'),
+            ),
+            ElevatedButton(
+              onPressed: () => HelmRouter.push(context, Routes.someSheet, rootNavigator: true),
+              child: const Text('Push sheet'),
             ),
             ElevatedButton(
               onPressed: () => HelmRouter.push(context, Routes.product, pathParams: {'pid': '123'}),

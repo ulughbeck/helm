@@ -5,53 +5,21 @@ import 'logger.dart';
 import 'route.dart';
 import 'state.dart';
 
-/// Represents the logical units of a URL path.
-enum _TokenType {
-  /// A normal path segment, like "products" or "123".
-  pathSegment,
-
-  /// The dive operator: `/!`.
-  dive,
-
-  /// The rise operator: `!/`.
-  rise,
-
-  /// The arbitrary sequence terminator: `~`.
-  terminator,
-}
-
-/// A token represents a single logical unit of a URL path.
-class _Token {
-  const _Token(this.type, this.value);
-  final _TokenType type;
-  final String value;
-  @override
-  String toString() => 'Token(${type.name}, "$value")';
-}
-
-/// A matched route definition with its path and params.
-typedef _TrieMatch = ({Routable route, Map<String, String> pathParams, int segmentsConsumed});
-
-/// Trie node for efficient route matching.
-class _TrieNode {
-  final Map<String, _TrieNode> children = {};
-  _TrieNode? parameterChild;
-  Routable? route;
-  String? parameterName;
-  bool isArbitrary = false;
-}
-
+/// Handles the bidirectional conversion between URL paths and the navigation page stack.
 class HelmRouteParser {
   HelmRouteParser(this.routes) {
     _buildTrie();
   }
 
   final List<Routable> routes;
-  final _TrieNode _trieRoot = _TrieNode();
+  final _trieRoot = _TrieNode();
+  final _parentStackCache = <String, NavigationState>{};
 
-  // ---------------------------------------------------------------------------
+  static final RegExp _paramNameRegex = RegExp(r'\{(\w+)\+\}');
+  static final RegExp _paramNamesRegex = RegExp(r'\{(\w+)\+?\}');
+  static final RegExp _pathRegex = RegExp(r'^/+|/+$');
+
   // TOKENIZATION: Convert String -> Stream of Tokens
-  // ---------------------------------------------------------------------------
 
   List<_Token> _tokenize(String path) {
     final tokens = <_Token>[];
@@ -80,13 +48,11 @@ class HelmRouteParser {
     return tokens;
   }
 
-  // ---------------------------------------------------------------------------
   // PARSING: Convert Tokens -> NavigationState
-  // ---------------------------------------------------------------------------
 
   /// The main public parsing method.
   NavigationState parseUri(Uri uri) {
-    if (uri.query.contains('?')) return [];
+    if (uri.query.contains('?')) return <Page<Object?>>[];
 
     final path = uri.path;
     final tokens = _tokenize(path);
@@ -94,12 +60,12 @@ class HelmRouteParser {
     final isRootPath = path.isNotEmpty && path.replaceAll('/', '').isEmpty;
     if (tokens.isEmpty && isRootPath) {
       final rootRoute = _trieRoot.route;
-      if (rootRoute == null) return [];
+      if (rootRoute == null) return <Page<Object?>>[];
       final page = rootRoute.page(queryParams: uri.queryParameters);
       return [page];
     }
 
-    final contextStack = <NavigationState>[<Page>[]];
+    final contextStack = <NavigationState>[<Page<Object?>>[]];
     int tokenIndex = 0;
 
     while (tokenIndex < tokens.length) {
@@ -129,16 +95,14 @@ class HelmRouteParser {
     }
 
     if (uri.queryParameters.isNotEmpty) _applyQueryParamsToAll(contextStack.first, uri.queryParameters);
+    if (contextStack.first.isEmpty) HelmLogger.error('Route "$path" not found');
     return contextStack.first;
   }
 
   void _handleDive(List<NavigationState> contextStack) {
     if (contextStack.last.isEmpty) {
-      // If the path starts with `/!`, we assume it's nested under the root.
       final rootRoute = _trieRoot.route;
-      if (rootRoute == null) {
-        throw Exception('Cannot dive: no parent page to nest under and no root ("/") route defined.');
-      }
+      if (rootRoute == null) throw Exception('Cannot dive: no parent page to nest under.');
       contextStack.last.add(rootRoute.page());
     }
 
@@ -149,14 +113,7 @@ class HelmRouteParser {
     final newChildren = <Page<Object?>>[];
     final newMeta = parentMeta.copyWith(children: () => newChildren);
 
-    // Replace the parent page with a new one containing the children reference.
-    contextStack.last[contextStack.last.length - 1] = parentMeta.route.build(
-      parentPage.key,
-      parentPage.name!,
-      newMeta,
-    );
-
-    // The new context for parsing is the children list.
+    contextStack.last[contextStack.last.length - 1] = parentMeta.route.build(parentPage.key, parentPage.name!, newMeta);
     contextStack.add(newChildren);
   }
 
@@ -166,7 +123,7 @@ class HelmRouteParser {
   }
 
   ({NavigationState pages, int nextTokenIndex}) _matchPathToPages(List<_Token> tokens, int startIndex) {
-    final pages = <Page>[];
+    final pages = <Page<Object?>>[];
     int currentIndex = startIndex;
 
     while (currentIndex < tokens.length && tokens[currentIndex].type == _TokenType.pathSegment) {
@@ -204,7 +161,7 @@ class HelmRouteParser {
 
       // 6. Handle arbitrary routes.
       if (matchedRoute.isArbitrary) {
-        final paramName = RegExp(r'\{(\w+)\+\}').firstMatch(matchedRoute.path)!.group(1)!;
+        final paramName = _paramNameRegex.firstMatch(matchedRoute.path)!.group(1)!;
         while (currentIndex < tokens.length && tokens[currentIndex].type == _TokenType.pathSegment) {
           final segmentValue = tokens[currentIndex].value;
           pages.add(matchedRoute.page(pathParams: {paramName: segmentValue}));
@@ -222,27 +179,19 @@ class HelmRouteParser {
   void _applyQueryParamsToAll(NavigationState pages, Map<String, String> queryParams) {
     if (queryParams.isEmpty) return;
 
-    // Iterate through all pages at the current navigation level.
     for (int i = 0; i < pages.length; i++) {
       final page = pages[i];
       final meta = page.meta;
 
       if (meta != null) {
-        // Create new metadata for the page, merging the existing query params with the new ones.
         final newMeta = meta.copyWith(queryParams: {...meta.queryParams, ...queryParams});
-
-        // Rebuild the page with the updated metadata.
         pages[i] = meta.route.build(page.key, page.name!, newMeta);
-
-        // If this page contains a nested navigator, recurse into its children.
         if (meta.children != null) _applyQueryParamsToAll(meta.children!, queryParams);
       }
     }
   }
 
-  // ---------------------------------------------------------------------------
   // URL RESTORATION: Convert NavigationState -> String
-  // ---------------------------------------------------------------------------
 
   /// The main public restoration method.
   Uri? restoreUri(NavigationState configuration) {
@@ -287,7 +236,7 @@ class HelmRouteParser {
       final isArbitrary = currentRoute.isArbitrary;
 
       if (inArbitrarySequence && isArbitrary && currentRoute.path == lastRoute?.path) {
-        final paramName = RegExp(r'\{(\w+)\+\}').firstMatch(currentRoute.path)!.group(1)!;
+        final paramName = _paramNameRegex.firstMatch(currentRoute.path)!.group(1)!;
         final paramValue = meta.pathParams[paramName];
         if (paramValue != null) buffer.write('/$paramValue');
         lastRestoredPath = '';
@@ -346,9 +295,7 @@ class HelmRouteParser {
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // TRIE & MATCHING HELPERS
-  // ---------------------------------------------------------------------------
+  // TRIE
 
   void _buildTrie() {
     for (final route in routes) {
@@ -358,7 +305,7 @@ class HelmRouteParser {
       }
 
       var current = _trieRoot;
-      final segments = route.path.replaceAll(RegExp(r'^/+|/+$'), '').split('/');
+      final segments = route.path.replaceAll(_pathRegex, '').split('/');
 
       for (final segment in segments) {
         if (segment.startsWith('{') && segment.endsWith('}')) {
@@ -421,8 +368,10 @@ class HelmRouteParser {
     return bestMatch;
   }
 
+  // HELPERS
+
   NavigationState findParentPages(List<String> segments, Map<String, String> params) {
-    final pages = <Page>[];
+    final pages = <Page<Object?>>[];
     _TrieNode currentNode = _trieRoot;
 
     for (int i = 0; i < segments.length - 1; i++) {
@@ -447,17 +396,55 @@ class HelmRouteParser {
     return pages;
   }
 
-  NavigationState getParentStackFor(Routable route, Map<String, String> pathParams) {
+  NavigationState _applyParamsToPages(
+    NavigationState pages,
+    Map<String, String> queryParams,
+    Map<String, String> pathParams,
+  ) {
+    return pages.map((page) {
+      final meta = page.meta;
+      if (meta == null) return page;
+
+      final newPathParams = <String, String>{};
+      final requiredParamNames = _paramNamesRegex.allMatches(meta.route.path).map((m) => m.group(1)!);
+
+      for (final paramName in requiredParamNames) {
+        if (pathParams.containsKey(paramName)) {
+          newPathParams[paramName] = pathParams[paramName]!;
+        }
+      }
+
+      final pathParamsChanged = !mapEquals(meta.pathParams, newPathParams);
+      final queryParamsChanged = !mapEquals(meta.queryParams, queryParams);
+
+      if (!pathParamsChanged && !queryParamsChanged) return page;
+
+      final newMeta = meta.copyWith(pathParams: newPathParams, queryParams: queryParams);
+      return meta.route.build(page.key, page.name!, newMeta);
+    }).toList();
+  }
+
+  NavigationState getParentStackFor(
+    Routable route, {
+    Map<String, String> pathParams = const {},
+    Map<String, String> queryParams = const {},
+  }) {
     String path = route.path;
-    if (path == '/') return [];
+
+    if (_parentStackCache.containsKey(path)) {
+      final cachedPages = _parentStackCache[path]!;
+      return _applyParamsToPages(cachedPages, queryParams, pathParams);
+    }
+
+    if (path == '/') return <Page<Object?>>[];
 
     // Normalize path and get its definition segments
-    path = path.replaceAll(RegExp(r'^/+|/+$'), '');
+    path = path.replaceAll(_pathRegex, '');
     if (path.endsWith('+')) path = path.substring(0, path.length - 1);
 
     final segments = path.split('/');
 
-    final pages = <Page>[];
+    final pages = <Page<Object?>>[];
     _TrieNode currentNode = _trieRoot;
 
     // Traverse the Trie using the route's *definition* segments
@@ -476,27 +463,35 @@ class HelmRouteParser {
       if (currentNode.route != null) {
         final parentParams = <String, String>{};
         final parentRoutePath = currentNode.route!.path;
-        final parentParamNames = RegExp(r'\{(\w+)\+?\}').allMatches(parentRoutePath).map((m) => m.group(1)!).toSet();
+        final parentParamNames = _paramNamesRegex.allMatches(parentRoutePath).map((m) => m.group(1)!).toSet();
 
         for (final paramName in parentParamNames) {
           if (pathParams.containsKey(paramName)) parentParams[paramName] = pathParams[paramName]!;
         }
-        pages.add(currentNode.route!.page(pathParams: parentParams));
+        pages.add(currentNode.route!.page(pathParams: parentParams, queryParams: queryParams));
       }
     }
+
+    _parentStackCache[path] = pages;
     return pages;
   }
 }
 
+/// A `RouteInformationParser` that bridges Flutter's routing system with `HelmRouteParser`.
 class HelmRouteInformationParser extends RouteInformationParser<NavigationState> {
   const HelmRouteInformationParser({required this.routeParser});
   final HelmRouteParser routeParser;
 
   @override
   Future<NavigationState> parseRouteInformation(RouteInformation routeInformation) {
-    final pages = routeParser.parseUri(routeInformation.uri);
-    HelmLogger.msg(pages.toPrettyString(routeInformation.uri));
-    return SynchronousFuture(pages);
+    try {
+      final pages = routeParser.parseUri(routeInformation.uri);
+      HelmLogger.msg(pages.toPrettyString(routeInformation.uri));
+      return SynchronousFuture(pages);
+    } catch (e, s) {
+      HelmLogger.error('Error parsing URI "${routeInformation.uri}": $e\n$s');
+      return SynchronousFuture(<Page<Object?>>[]);
+    }
   }
 
   @override
@@ -504,4 +499,40 @@ class HelmRouteInformationParser extends RouteInformationParser<NavigationState>
     final uri = routeParser.restoreUri(configuration);
     return uri != null ? RouteInformation(uri: uri) : null;
   }
+}
+
+/// Represents the logical units of a URL path.
+enum _TokenType {
+  /// A normal path segment, like "products" or "123".
+  pathSegment,
+
+  /// The dive operator: `/!`.
+  dive,
+
+  /// The rise operator: `!/`.
+  rise,
+
+  /// The arbitrary sequence terminator: `~`.
+  terminator,
+}
+
+/// A token represents a single logical unit of a URL path.
+class _Token {
+  const _Token(this.type, this.value);
+  final _TokenType type;
+  final String value;
+  @override
+  String toString() => 'Token(${type.name}, "$value")';
+}
+
+/// A matched route definition with its path and params.
+typedef _TrieMatch = ({Routable route, Map<String, String> pathParams, int segmentsConsumed});
+
+/// Trie node for efficient route matching.
+class _TrieNode {
+  final Map<String, _TrieNode> children = {};
+  _TrieNode? parameterChild;
+  Routable? route;
+  String? parameterName;
+  bool isArbitrary = false;
 }

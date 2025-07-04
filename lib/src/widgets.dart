@@ -1,6 +1,3 @@
-import 'dart:developer';
-
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'logger.dart';
@@ -8,6 +5,10 @@ import 'route.dart';
 import 'router.dart';
 import 'state.dart';
 
+/// A widget that creates a nested [Navigator] for managing an independent navigation stack within a part of the UI.
+///
+/// Use this for master-detail layouts or screens that have their own internal navigation flow.
+/// The [builder] provides the nested `Navigator` as its `child`.
 class NestedNavigator extends StatefulWidget {
   const NestedNavigator({
     required this.builder,
@@ -122,6 +123,12 @@ typedef NestedTabsBuilder = Widget Function(
   ValueChanged<int> onTabPressed,
 );
 
+/// A widget that creates a nested [Navigator] designed for stateful tabbed UI,
+/// such as a [BottomNavigationBar], [NavigationRail] and etc.
+///
+/// It automatically preserves the navigation stack of each tab. The [builder]
+/// provides the active tab's `Navigator` as its `child`, along with the
+/// `selectedIndex` and an `onTabPressed` callback to manage tab state.
 class NestedTabsNavigator extends StatefulWidget {
   const NestedTabsNavigator({
     required this.tabs,
@@ -210,7 +217,7 @@ class _NestedTabsNavigatorState extends State<NestedTabsNavigator> {
         delegate.replaceNestedStack(parentName, [initialTab.page()]);
       }
     } catch (e) {
-      if (kDebugMode) log('Error initializing NestedTabsNavigator: $e', name: 'HelmRouter');
+      HelmLogger.error('Error initializing NestedTabsNavigator: $e');
     } finally {
       _isInitializing = false;
     }

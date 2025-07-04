@@ -8,7 +8,7 @@ import 'parser.dart';
 import 'route.dart';
 import 'state.dart';
 
-/// The main router configuration for the application.
+/// The main router configuration for the application that brings together the delegate, parser, and navigation guards.
 class HelmRouter extends RouterConfig<NavigationState> {
   factory HelmRouter({
     required List<Routable> routes,
@@ -81,8 +81,54 @@ class HelmRouter extends RouterConfig<NavigationState> {
     return delegate as HelmRouterDelegate;
   }
 
-  static void change(BuildContext context, NavigationState Function(NavigationState) fn) =>
-      delegateOf(context).change(fn);
+  // CORE
+
+  /// Returns the current [Uri] that represents the live navigation stack.
+  static Uri? currentUri(BuildContext context) => delegateOf(context).currentUri;
+
+  /// Returns the [Map<String, String>] of the live navigation state.
+  static Map<String, String> currentQueryParams(BuildContext context) => delegateOf(context).currentQueryParams;
+
+  /// Returns the current [NavigationState]
+  static NavigationState state(BuildContext context) => delegateOf(context).currentConfiguration;
+
+  static void change(BuildContext context, NavigationGuard fn) => delegateOf(context).change(fn);
+
+  static void changeQueryParams(BuildContext context, {required Map<String, String> queryParams}) =>
+      delegateOf(context).change((current) {
+        NavigationState updateRecursive(NavigationState pages) {
+          return pages.map((page) {
+            final meta = page.meta;
+            if (meta == null) return page;
+
+            final updatedQueryParams = Map<String, String>.from(meta.queryParams);
+            queryParams.forEach((key, value) {
+              if (value.isEmpty) {
+                updatedQueryParams.remove(key);
+              } else {
+                updatedQueryParams[key] = value;
+              }
+            });
+
+            final updatedChildren = meta.children != null ? updateRecursive(meta.children!) : null;
+            final queryChanged = !mapEquals(meta.queryParams, updatedQueryParams);
+            final childrenChanged = updatedChildren != null && !listEquals(meta.children, updatedChildren);
+
+            if (!queryChanged && !childrenChanged) return page;
+
+            final newMeta = meta.copyWith(
+              queryParams: updatedQueryParams,
+              children: childrenChanged ? () => updatedChildren : null,
+            );
+
+            return meta.route.build(page.key, page.name!, newMeta);
+          }).toList();
+        }
+
+        return updateRecursive(current);
+      });
+
+  // BASICS
 
   static void push(
     BuildContext context,
@@ -94,7 +140,10 @@ class HelmRouter extends RouterConfig<NavigationState> {
     final delegate = delegateOf(context);
     final parser = delegate.routeParser;
 
-    change(context, (current) {
+    delegate.change((current) {
+      final currentQueryParams = delegate.currentQueryParams;
+      final mergedQueryParams = {...currentQueryParams, ...queryParams};
+
       NavigationState findDeepestStack(NavigationState pages) {
         if (rootNavigator || pages.isEmpty) return pages;
         final last = pages.last;
@@ -109,19 +158,16 @@ class HelmRouter extends RouterConfig<NavigationState> {
 
       final pagesToAdd = <Page<Object?>>[];
 
-      // 1. Check if the route being pushed is the same as the last one AND is arbitrary.
       if (route.isArbitrary && route == lastRouteOnStack) {
-        // Case 1: We are pushing another instance of the same arbitrary route.
-        pagesToAdd.add(route.page(pathParams: pathParams, queryParams: queryParams));
+        pagesToAdd.add(route.page(pathParams: pathParams, queryParams: mergedQueryParams));
       } else {
-        // Case 2: This is a different route. Build the full parent stack.
-        final parentPages = parser.getParentStackFor(route, pathParams);
+        final parentPages = parser.getParentStackFor(route, pathParams: pathParams, queryParams: mergedQueryParams);
         for (final parentPage in parentPages) {
           if (lastPageOnStack == null || parentPage.name != lastPageOnStack.name) {
             pagesToAdd.add(parentPage);
           }
         }
-        pagesToAdd.add(route.page(pathParams: pathParams, queryParams: queryParams));
+        pagesToAdd.add(route.page(pathParams: pathParams, queryParams: mergedQueryParams));
       }
 
       NavigationState addAllToDeepest(NavigationState stack, List<Page<Object?>> newPages) {
@@ -149,6 +195,8 @@ class HelmRouter extends RouterConfig<NavigationState> {
 
   static void pop(BuildContext context) => delegateOf(context).popRoute();
 
+  // HELPERS
+
   static void popUntillRoot(BuildContext context) {
     final delegate = delegateOf(context);
     final rootState = delegate.routeParser.parseUri(Uri.parse('/'));
@@ -164,38 +212,4 @@ class HelmRouter extends RouterConfig<NavigationState> {
     Map<String, String> queryParams = const <String, String>{},
   }) =>
       delegateOf(context).change((_) => <Page<Object?>>[route.page(pathParams: pathParams, queryParams: queryParams)]);
-
-  static void changeQueryParams(BuildContext context, {required Map<String, String?> queryParams}) =>
-      delegateOf(context).change((current) {
-        NavigationState updateRecursive(NavigationState pages) {
-          return pages.map((page) {
-            final meta = page.meta;
-            if (meta == null) return page;
-
-            final updatedQueryParams = Map<String, String>.from(meta.queryParams);
-            queryParams.forEach((key, value) {
-              if (value == null) {
-                updatedQueryParams.remove(key);
-              } else {
-                updatedQueryParams[key] = value;
-              }
-            });
-
-            final updatedChildren = meta.children != null ? updateRecursive(meta.children!) : null;
-            final queryChanged = !mapEquals(meta.queryParams, updatedQueryParams);
-            final childrenChanged = updatedChildren != null && !listEquals(meta.children, updatedChildren);
-
-            if (!queryChanged && !childrenChanged) return page;
-
-            final newMeta = meta.copyWith(
-              queryParams: updatedQueryParams,
-              children: childrenChanged ? () => updatedChildren : null,
-            );
-
-            return meta.route.build(page.key, page.name!, newMeta);
-          }).toList();
-        }
-
-        return updateRecursive(current);
-      });
 }
