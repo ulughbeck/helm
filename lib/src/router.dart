@@ -86,8 +86,11 @@ class HelmRouter extends RouterConfig<NavigationState> {
   /// Returns the current [Uri] that represents the live navigation stack.
   static Uri? currentUri(BuildContext context) => delegateOf(context).currentUri;
 
-  /// Returns the [Map<String, String>] of the live navigation state.
+  /// Returns the [Map<String, String>] with all query params of the live navigation state.
   static Map<String, String> currentQueryParams(BuildContext context) => delegateOf(context).currentQueryParams;
+
+  /// Returns the [Map<String, String>] with all path params of the live navigation state.
+  static Map<String, String> currentPathParams(BuildContext context) => delegateOf(context).currentPathParams;
 
   /// Returns the current [NavigationState]
   static NavigationState state(BuildContext context) => delegateOf(context).currentConfiguration;

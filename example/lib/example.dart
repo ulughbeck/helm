@@ -70,12 +70,12 @@ class _AppState extends State<App> {
         // show not found page if no route found
         (pages) => pages.isEmpty ? [Routes.notFound.page()] : pages,
         // ensure home is always first route
-        // (pages) {
-        //   if (pages.isNotEmpty && pages.first.name != Routes.root.path) {
-        //     return [Routes.root.page(), ...pages];
-        //   }
-        //   return pages;
-        // },
+        (pages) {
+          if (pages.isNotEmpty && pages.first.name != Routes.root.path) {
+            return [Routes.root.page(), ...pages];
+          }
+          return pages;
+        },
       ],
     );
   }
@@ -254,7 +254,7 @@ class ProductsScreen extends StatelessWidget {
   const ProductsScreen({super.key});
   @override
   Widget build(BuildContext context) => Scaffold(
-        appBar: AppBar(title: const Text('Products')),
+        appBar: AppBar(title: Text('Products')),
         body: Center(
           child: ElevatedButton(
             onPressed: () => HelmRouter.push(context, Routes.product, pathParams: {'pid': '123'}),

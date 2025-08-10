@@ -63,6 +63,31 @@ class HelmRouterDelegate extends RouterDelegate<NavigationState>
     return allQueryParams;
   }
 
+  Map<String, String> get currentPathParams {
+    final allPathParams = <String, String>{};
+    final keyCounts = <String, int>{};
+    void collect(NavigationState pages) {
+      for (final page in pages) {
+        final meta = page.meta;
+        if (meta != null) {
+          meta.pathParams.forEach((key, value) {
+            final count = keyCounts[key] ?? 0;
+            final newKey = '$key-$count';
+            allPathParams[newKey] = value;
+            keyCounts[key] = count + 1;
+          });
+
+          if (meta.children != null) {
+            collect(meta.children!);
+          }
+        }
+      }
+    }
+
+    collect(_pages);
+    return allPathParams;
+  }
+
   @override
   Future<void> setNewRoutePath(NavigationState pages) {
     final newPages = _applyGuards(pages);
