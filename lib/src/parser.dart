@@ -484,7 +484,7 @@ class HelmRouteInformationParser extends RouteInformationParser<NavigationState>
   Future<NavigationState> parseRouteInformation(RouteInformation routeInformation) {
     try {
       final pages = routeParser.parseUri(routeInformation.uri);
-      HelmLogger.msg('initial path: "${routeInformation.uri}"');
+      HelmLogger.msg('initial path: ${routeInformation.uri}');
       if (HelmLogger.logStack) HelmLogger.msg(pages.toPrettyString);
       return SynchronousFuture(pages);
     } catch (e, s) {
