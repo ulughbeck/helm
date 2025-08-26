@@ -108,13 +108,12 @@ extension $NavigationStateUtils on NavigationState {
     return recursive ? removeAllRecursive(this, route) : removeInDeepestLastStack(this, route);
   }
 
-  String toPrettyString([Uri? initialPath]) {
+  String get toPrettyString {
     final buffer = StringBuffer();
-    if (initialPath != null) buffer.writeln('Initial Path: "$initialPath"');
     if (isEmpty) {
-      buffer.writeln('Navigation Stack: [EMPTY]');
+      buffer.writeln('navigation stack: (empty)');
     } else {
-      buffer.writeln('Navigation Stack:');
+      buffer.writeln('navigation stack:');
       _writePages(buffer, this);
     }
     return buffer.toString();
@@ -139,12 +138,12 @@ extension $NavigationStateUtils on NavigationState {
       final currentPrefix = parentPrefix + prefix;
 
       if (meta == null) {
-        buffer.writeln('$currentPrefix ${page.name ?? 'Unknown Page'} (No meta)');
+        buffer.writeln('$currentPrefix ${page.name ?? 'unknown page'} (no meta)');
         continue;
       }
 
       final hasChildren = meta.children != null && meta.children!.isNotEmpty;
-      final navigatorIndicator = (hasChildren ? ' (Nested Navigator)' : '') + (isFirst ? ' (ROOT)' : '');
+      final navigatorIndicator = (hasChildren ? ' (nested navigator)' : '') + (isFirst ? ' (root)' : '');
 
       final params = <String, String>{...meta.pathParams, ...meta.queryParams};
       final paramsString =

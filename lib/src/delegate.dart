@@ -104,7 +104,8 @@ class HelmRouterDelegate extends RouterDelegate<NavigationState>
     _pages = UnmodifiableListView(guardedPages);
     currentUri = routeParser.restoreUri(_pages);
     notifyListeners();
-    HelmLogger.msg(_pages.toPrettyString());
+    HelmLogger.msg('current path: $currentUri');
+    if (HelmLogger.logStack) HelmLogger.msg(_pages.toPrettyString);
   }
 
   NavigationState _applyGuards(NavigationState pages) {

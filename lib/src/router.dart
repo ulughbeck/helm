@@ -17,6 +17,7 @@ class HelmRouter extends RouterConfig<NavigationState> {
     TransitionDelegate<Object?> defaultTransitionDelegate = const DefaultTransitionDelegate<Object?>(),
     Listenable? refresh,
     bool enableLogs = kDebugMode,
+    bool logNavigationStack = false,
   }) {
     assert(() {
       if (routes.isEmpty) throw ArgumentError('Routes list cannot be empty');
@@ -42,6 +43,7 @@ class HelmRouter extends RouterConfig<NavigationState> {
     }());
 
     enableLogs ? HelmLogger.on() : HelmLogger.off();
+    logNavigationStack ? HelmLogger.onStack() : HelmLogger.offStack();
 
     final routeParser = HelmRouteParser(routes);
     final delegate = HelmRouterDelegate(
@@ -76,7 +78,7 @@ class HelmRouter extends RouterConfig<NavigationState> {
     final delegate = Router.of(context).routerDelegate;
     assert(
       delegate is HelmRouterDelegate,
-      'AppRouter.of() was called with a context that does not contain an AppRouter.',
+      'BuildContext does not contain an HelmRouterDelegate.',
     );
     return delegate as HelmRouterDelegate;
   }
