@@ -29,6 +29,9 @@ class HelmRouter extends RouterConfig<NavigationState> {
         final path = route.path;
         if (path.isEmpty) throw ArgumentError('Route path cannot be empty.');
         if (!path.startsWith('/')) throw ArgumentError('Route path must start with "/". Offending route: "$path"');
+        if (path.trim() != path) throw ArgumentError('Route path cannot contain leading or trailing whitespace: "$path"');
+        if (path.contains(RegExp(r'\s'))) throw ArgumentError('Route path cannot contain whitespace characters: "$path"');
+        if (path.contains('//')) throw ArgumentError('Route path cannot contain empty segments ("//"): "$path"');
         if (path == '/-') throw ArgumentError('Route path cannot be "/-".');
         if (!seenPaths.add(path)) throw ArgumentError('Duplicate route path found: "$path"');
         for (final match in paramRegex.allMatches(path)) {
@@ -202,7 +205,7 @@ class HelmRouter extends RouterConfig<NavigationState> {
 
   // HELPERS
 
-  static void popUntillRoot(BuildContext context) {
+  static void popUntilRoot(BuildContext context) {
     final delegate = delegateOf(context);
     final rootState = delegate.routeParser.parseUri(Uri.parse('/'));
     delegate.change((_) => rootState);

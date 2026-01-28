@@ -26,7 +26,7 @@ void main() {
       expect(find.text('Category: laptops'), findsOneWidget);
 
       final context = tester.element(find.text('Category: laptops'));
-      HelmRouter.popUntillRoot(context);
+      HelmRouter.popUntilRoot(context);
       await tester.pumpAndSettle();
 
       expect(find.text('Home'), findsOneWidget);

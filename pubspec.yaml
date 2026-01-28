@@ -1,5 +1,24 @@
 name: helm
-description: "A simple declarative router for Flutter."
+description: "A state-driven declarative router for Flutter"
+
+homepage: https://github.com/ulughbeck/helm
+repository: https://github.com/ulughbeck/helm
+issue_tracker: https://github.com/ulughbeck/helm/issues
+
+topics:
+  - router
+  - navigation
+  - navigator
+  - state-management
+  - helm
+
+platforms:
+  android:
+  ios:
+  linux:
+  macos:
+  web:
+  windows:
 
 version: 0.0.1
 
@@ -16,7 +35,7 @@ dependencies:
 dev_dependencies: 
   flutter_test:
     sdk: flutter
-  flutter_lints: ^5.0.0
+  flutter_lints: ^6.0.0
   
 flutter:
   uses-material-design: true
