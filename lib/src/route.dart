@@ -1,11 +1,12 @@
-import 'package:flutter/cupertino.dart';
-import 'package:flutter/material.dart';
+import 'package:flutter/widgets.dart';
 
-import 'logger.dart';
 import 'state.dart';
 
-/// A mixin that defines the contract for a route.
+/// Describes a route: its URL template, how it is shown, and how it is built.
 mixin Routable {
+  /// URL template. It must start with `/`.
+  ///
+  /// Use `{name}` for one segment and `{name+}` for one or more segments.
   String get path;
 
   PageType get pageType => PageType.material;
@@ -14,182 +15,57 @@ mixin Routable {
 
   Widget builder(Map<String, String> pathParams, Map<String, String> queryParams);
 
-  @pragma('vm:prefer-inline')
-  Page<Object?> build(LocalKey? key, String name, $RouteMeta args) {
-    switch (pageType) {
-      case PageType.material:
-        return MaterialPage<Object?>(
-          key: key,
-          name: name,
-          arguments: args,
-          child: args.route.builder(args.pathParams, args.queryParams),
-        );
-      case PageType.cupertino:
-        return CupertinoPage<Object?>(
-          key: key,
-          name: name,
-          arguments: args,
-          child: args.route.builder(args.pathParams, args.queryParams),
-        );
-      case PageType.dialog:
-        return $DialogPage<Object?>(
-          key: key,
-          name: name,
-          arguments: args,
-          child: args.route.builder(args.pathParams, args.queryParams),
-        );
-      case PageType.bottomSheet:
-        return $BottomSheetPage<Object?>(
-          key: key,
-          name: name,
-          arguments: args,
-          child: args.route.builder(args.pathParams, args.queryParams),
-        );
-    }
-  }
-
-  Page<Object?> page({
+  /// Creates a page of this route.
+  HelmPage page({
     Map<String, String> pathParams = const {},
     Map<String, String> queryParams = const {},
     NavigationState? children,
-    LocalKey? key,
-  }) {
-    final args = $RouteMeta(
-      route: this,
-      pathParams: pathParams,
-      queryParams: queryParams,
-      children: children,
-    );
-    final name = restorePathForRoute(pathParams);
-    return build(key, name, args);
-  }
-
-  bool get isArbitrary => path.contains('+}') && path.contains('{');
-
-  static final RegExp _paramRegex = RegExp(r'\{[^}]+\}');
-
-  String restorePathForRoute(Map<String, String> pathParams) {
-    var templatePath = path;
-
-    if (pathParams.isEmpty) {
-      if (templatePath.contains('{')) _logMissingParams(templatePath);
-      return templatePath.contains('{') ? templatePath.replaceAll(_paramRegex, '-') : templatePath;
-    }
-
-    var result = templatePath;
-    pathParams.forEach((key, value) {
-      result = result.replaceAll(RegExp(r'\{' + key + r'\+?\}'), value);
-    });
-
-    if (result.contains('{')) {
-      _logMissingParams(result);
-      result = result.replaceAll(_paramRegex, '-');
-    }
-
-    return result;
-  }
-
-  void _logMissingParams(String pathWithParams) {
-    final matches = _paramRegex.allMatches(pathWithParams);
-    if (matches.isNotEmpty) {
-      final missingParams = matches.map((m) => m.group(0)).join(', ');
-      HelmLogger.error('Route for path "$path" is missing required parameter(s): "$missingParams"');
-    }
-  }
-}
-
-/// A data class holding all arguments for a given page.
-class $RouteMeta {
-  const $RouteMeta({
-    required this.route,
-    this.pathParams = const {},
-    this.queryParams = const {},
-    this.children,
-  });
-
-  final Routable route;
-  final Map<String, String> pathParams;
-  final Map<String, String> queryParams;
-  final NavigationState? children;
-
-  $RouteMeta copyWith({
-    Routable? route,
-    Map<String, String>? pathParams,
-    Map<String, String>? queryParams,
-    ValueGetter<NavigationState?>? children,
   }) =>
-      $RouteMeta(
-        route: route ?? this.route,
-        pathParams: pathParams ?? this.pathParams,
-        queryParams: queryParams ?? this.queryParams,
-        children: children != null ? children() : this.children,
+      HelmPage(
+        route: this,
+        pathParams: pathParams,
+        queryParams: queryParams,
+        children: children,
       );
+
+  /// Whether the path has a `{name+}` parameter.
+  bool get isArbitrary => arbitraryParam != null;
+
+  /// Name of the `{name+}` parameter, or null.
+  String? get arbitraryParam => _arbitraryParamRegex.firstMatch(path)?.group(1);
+
+  /// Fills the path template with [pathParams].
+  ///
+  /// Throws an [ArgumentError] when a param is missing or empty, because the page would have
+  /// no valid URL. With [encode], values are percent-encoded so that they stay one URL segment.
+  String restorePath(Map<String, String> pathParams, {bool encode = false}) =>
+      path.replaceAllMapped(_paramRegex, (match) {
+        final name = match.group(1)!;
+        final value = pathParams[name];
+        if (value == null || value.isEmpty) {
+          throw ArgumentError.value(pathParams, 'pathParams', 'Route "$path" needs a non-empty value for "$name"');
+        }
+        return encode ? encodePathSegment(value) : value;
+      });
 }
 
-extension $PageRouteMeta on Page<Object?> {
-  $RouteMeta? get meta {
-    final args = arguments;
-    return args is $RouteMeta ? args : null;
-  }
-}
+final _paramRegex = RegExp(r'\{(\w+)\+?\}');
+final _arbitraryParamRegex = RegExp(r'\{(\w+)\+\}');
 
-/// Defines how a [Routable] should be displayed.
+/// Percent-encodes a path param value. `!` is encoded too because Helm uses it in its URL grammar.
+String encodePathSegment(String value) => Uri.encodeComponent(value).replaceAll('!', '%21');
+
+/// Defines how a [Routable] is shown.
 enum PageType {
-  /// A standard, full-screen page using [MaterialPage].
+  /// A full-screen page that uses [MaterialPage].
   material,
 
-  /// A standard, full-screen page using [CupertinoPage].
+  /// A full-screen page that uses [CupertinoPage].
   cupertino,
 
-  /// A modal dialog using [DialogRoute].
+  /// A modal dialog that uses [DialogRoute].
   dialog,
 
-  /// A modal bottom sheet using [ModalBottomSheetRoute].
+  /// A modal bottom sheet that uses [ModalBottomSheetRoute].
   bottomSheet,
-}
-
-/// A page that displays its [child] as a modal dialog.
-class $DialogPage<T> extends Page<T> {
-  const $DialogPage({
-    required this.child,
-    super.key,
-    super.name,
-    super.arguments,
-    super.restorationId,
-  });
-
-  final Widget child;
-
-  @override
-  Route<T> createRoute(BuildContext context) {
-    return DialogRoute<T>(
-      context: context,
-      settings: this,
-      builder: (BuildContext context) => child,
-    );
-  }
-}
-
-/// A page that displays its [child] as a modal bottom sheet.
-class $BottomSheetPage<T> extends Page<T> {
-  const $BottomSheetPage({
-    required this.child,
-    this.isScrollControlled = true,
-    super.key,
-    super.name,
-    super.arguments,
-    super.restorationId,
-  });
-
-  final Widget child;
-  final bool isScrollControlled;
-
-  @override
-  Route<T> createRoute(BuildContext context) {
-    return ModalBottomSheetRoute<T>(
-      settings: this,
-      isScrollControlled: isScrollControlled,
-      builder: (BuildContext context) => child,
-    );
-  }
 }

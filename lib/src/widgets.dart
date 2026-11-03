@@ -1,119 +1,64 @@
-import 'package:flutter/material.dart';
+import 'package:flutter/widgets.dart';
 
-import 'logger.dart';
+import 'delegate.dart';
+import 'pages.dart';
 import 'route.dart';
 import 'router.dart';
 import 'state.dart';
 
-/// A widget that creates a nested [Navigator] for managing an independent navigation stack within a part of the UI.
+/// Shows the nested stack of the enclosing page in its own [Navigator].
 ///
-/// Use this for master-detail layouts or screens that have their own internal navigation flow.
-/// The [builder] provides the nested `Navigator` as its `child`.
+/// Use it for master-detail layouts or screens with their own navigation flow. When the nested
+/// stack is empty, the widget sets it to [initialState] or to a page of [initialRoute]. Without
+/// both, the stack stays empty until a push. A URL that dives into the page sets the stack instead. The [builder] gets the nested `Navigator` as `child`.
 class NestedNavigator extends StatefulWidget {
   const NestedNavigator({
     required this.builder,
-    super.key,
     this.initialRoute,
     this.initialState,
-  }) : assert(
-          !(initialRoute != null && initialState != null),
-          'Only one of initialRoute or initialState should be provided, not both.',
-        );
+    this.observers = const <NavigatorObserver>[],
+    this.transitionDelegate,
+    super.key,
+  })  : assert(
+          initialRoute == null || initialState == null,
+          'Provide only one of initialRoute or initialState.',
+        ),
+        assert(initialState == null || initialState.length > 0, 'initialState cannot be empty.');
 
   final Routable? initialRoute;
   final NavigationState? initialState;
   final Widget Function(BuildContext context, Widget child) builder;
+  final List<NavigatorObserver> observers;
+  final TransitionDelegate<Object?>? transitionDelegate;
 
   @override
   State<NestedNavigator> createState() => _NestedNavigatorState();
 }
 
-class _NestedNavigatorState extends State<NestedNavigator> {
-  final _navigationKey = GlobalKey<NavigatorState>();
-
-  bool _initialized = false;
+class _NestedNavigatorState extends State<NestedNavigator> with _NestedHostMixin {
+  final _navigatorKey = GlobalKey<NavigatorState>();
 
   @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addPostFrameCallback(_initializeNavigator);
-  }
-
-  @pragma('vm:prefer-inline')
-  void _initializeNavigator(Duration _) {
-    if (!mounted || _initialized) return;
-    _initialized = true;
-
-    try {
-      final delegate = HelmRouter.delegateOf(context);
-      final parentRoute = ModalRoute.of(context);
-      if (parentRoute == null) return;
-
-      final parentArgs = parentRoute.settings.arguments;
-      if (parentArgs is! $RouteMeta || parentArgs.children != null) return;
-
-      final parentRouteName = parentRoute.settings.name;
-      if (parentRouteName == null) {
-        HelmLogger.error('Warning: Parent route name is null in NestedNavigator');
-        return;
-      }
-
-      final initialRoute = widget.initialRoute;
-      final initialState = widget.initialState;
-
-      if (initialRoute != null) {
-        delegate.setInitialNestedRoute(parentRouteName, [initialRoute.page()]);
-      } else if (initialState != null) {
-        delegate.setInitialNestedRoute(parentRouteName, initialState);
-      } else {
-        delegate.prepareNestedNavigator(parentRouteName);
-      }
-    } catch (e) {
-      HelmLogger.error('Error initializing NestedNavigator: $e');
-    }
-  }
-
-  @pragma('vm:prefer-inline')
-  void _onDidRemovePage(Page<Object?> page) {
-    if (mounted) HelmRouter.delegateOf(context).onDidRemovePage(page);
-  }
+  NavigatorState? get navigator => _navigatorKey.currentState;
 
   @override
-  Widget build(BuildContext context) => AnimatedBuilder(
-        animation: HelmRouter.delegateOf(context),
-        builder: (context, child) {
-          try {
-            final parentRoute = ModalRoute.of(context);
-            if (parentRoute == null) {
-              HelmLogger.error('Warning: Parent route is null in NestedNavigator');
-              return widget.builder(context, const SizedBox.shrink());
-            }
+  Widget build(BuildContext context) {
+    final scope = _scopeOf(context, 'NestedNavigator',
+        () => widget.initialState ?? [if (widget.initialRoute case final route?) route.page()]);
+    final children = scope.page.children;
+    if (children == null || children.isEmpty) return widget.builder(context, const SizedBox.shrink());
 
-            final parentArgs = parentRoute.settings.arguments;
-            if (parentArgs is! $RouteMeta) {
-              HelmLogger.error('Warning: Parent args is null in NestedNavigator');
-              return widget.builder(context, const SizedBox.shrink());
-            }
-
-            final nestedPages = parentArgs.children;
-            if (nestedPages == null || nestedPages.isEmpty) {
-              return widget.builder(context, const SizedBox.shrink());
-            }
-
-            return widget.builder(
-              context,
-              Navigator(
-                key: _navigationKey,
-                pages: nestedPages,
-                onDidRemovePage: _onDidRemovePage,
-              ),
-            );
-          } catch (e) {
-            HelmLogger.error('Error building NestedNavigator: $e');
-            return widget.builder(context, const SizedBox.shrink());
-          }
-        },
-      );
+    return widget.builder(
+      context,
+      Navigator(
+        key: _navigatorKey,
+        pages: buildPages(children, stackPath),
+        transitionDelegate: widget.transitionDelegate ?? delegate.transitionDelegate,
+        observers: widget.observers,
+        onDidRemovePage: (page) => removePage(delegate, scope.childrenPath, page),
+      ),
+    );
+  }
 }
 
 typedef NestedTabsBuilder = Widget Function(
@@ -123,12 +68,13 @@ typedef NestedTabsBuilder = Widget Function(
   ValueChanged<int> onTabPressed,
 );
 
-/// A widget that creates a nested [Navigator] designed for stateful tabbed UI,
-/// such as a [BottomNavigationBar], [NavigationRail] and etc.
+/// Shows the nested stack of the enclosing page as tabs, one [Navigator] per tab.
 ///
-/// It automatically preserves the navigation stack of each tab. The [builder]
-/// provides the active tab's `Navigator` as its `child`, along with the
-/// `selectedIndex` and an `onTabPressed` callback to manage tab state.
+/// The first page of the nested stack selects the tab. When the nested stack is empty, the widget
+/// sets it to [initialState] or to a page of [initialTab], or of the first tab.
+///
+/// Visited tabs stay mounted in an [IndexedStack], so their pages keep widget state such as
+/// scroll positions and form input.
 class NestedTabsNavigator extends StatefulWidget {
   const NestedTabsNavigator({
     required this.tabs,
@@ -137,195 +83,149 @@ class NestedTabsNavigator extends StatefulWidget {
     this.initialState,
     this.cacheTabState = true,
     this.clearStackOnDoubleTap = true,
+    this.observersBuilder,
+    this.transitionDelegate,
     super.key,
   })  : assert(tabs.length > 0, 'Tabs should contain at least 1 route'),
-        assert(
-          !(initialTab != null && initialState != null),
-          'Only one of initialTab or initialState should be provided, not both.',
-        );
+        assert(initialTab == null || initialState == null, 'Provide only one of initialTab or initialState.'),
+        assert(initialState == null || initialState.length > 0, 'initialState cannot be empty.');
 
-  final NavigationState? initialState;
-  final Routable? initialTab;
   final List<Routable> tabs;
   final NestedTabsBuilder builder;
+  final Routable? initialTab;
+  final NavigationState? initialState;
+
+  /// Keeps the stack and widget state of a tab when another tab is selected.
   final bool cacheTabState;
+
+  /// Resets the selected tab to its first page when it is selected again.
   final bool clearStackOnDoubleTap;
+
+  /// Observers for the navigator of each tab. An observer can belong to one navigator only,
+  /// so return a new list for each tab index.
+  final List<NavigatorObserver> Function(int tabIndex)? observersBuilder;
+
+  final TransitionDelegate<Object?>? transitionDelegate;
 
   @override
   State<NestedTabsNavigator> createState() => _NestedTabsNavigatorState();
 }
 
-class _NestedTabsNavigatorState extends State<NestedTabsNavigator> {
-  final _navigationKey = GlobalKey<NavigatorState>();
+class _NestedTabsNavigatorState extends State<NestedTabsNavigator> with _NestedHostMixin {
+  final _navigatorKeys = <int, GlobalKey<NavigatorState>>{};
+  final _observers = <int, List<NavigatorObserver>>{};
 
-  late final Map<Routable, NavigationState> _tabStacks;
-  late final Map<String, int> _pathToIndexCache;
+  /// Last known stack of each visited tab.
+  final _stacks = <int, NavigationState>{};
   late int _activeIndex;
-  bool _isInitializing = false;
+
+  @override
+  NavigatorState? get navigator => _navigatorKeys[_activeIndex]?.currentState;
 
   @override
   void initState() {
     super.initState();
-
-    final initialTab = widget.initialTab;
-    if (initialTab != null) {
-      assert(
-        widget.tabs.contains(initialTab),
-        'The initialTab must be one of the routes provided in the tabs list',
-      );
-    }
-
-    _tabStacks = <Routable, NavigationState>{};
-    _pathToIndexCache = <String, int>{};
-
-    final tabs = widget.tabs;
-    for (var i = 0; i < tabs.length; i++) {
-      final tab = tabs[i];
-      _tabStacks[tab] = [tab.page()];
-      _pathToIndexCache[tab.path] = i;
-    }
-
-    _activeIndex = initialTab != null ? _pathToIndexCache[initialTab.path] ?? 0 : 0;
-
-    WidgetsBinding.instance.addPostFrameCallback(_initializeTabNavigator);
+    final initialTab = widget.initialState?.first.route ?? widget.initialTab;
+    _activeIndex = initialTab == null ? 0 : widget.tabs.indexOf(initialTab).clamp(0, widget.tabs.length - 1);
   }
 
-  @pragma('vm:prefer-inline')
-  void _initializeTabNavigator(Duration _) {
-    if (!mounted || _isInitializing) return;
-    _isInitializing = true;
+  void _onTabPressed(int index) {
+    final path = stackPath;
+    if (index < 0 || index >= widget.tabs.length || path == null) return;
 
-    try {
-      final delegate = HelmRouter.delegateOf(context);
-      final parentRoute = ModalRoute.of(context);
-      final parentArgs = parentRoute?.settings.arguments;
-
-      if (parentArgs is! $RouteMeta || (parentArgs.children != null && parentArgs.children!.isNotEmpty)) {
-        return;
-      }
-
-      final parentName = parentRoute?.settings.name;
-      if (parentName != null && _activeIndex < widget.tabs.length) {
-        final initialState = widget.initialState;
-        if (initialState != null && initialState.isNotEmpty) {
-          _activeIndex = _calculateActiveIndex(initialState);
-          delegate.replaceNestedStack(parentName, initialState);
-          return;
-        }
-
-        final initialTab = widget.tabs[_activeIndex];
-        delegate.replaceNestedStack(parentName, [initialTab.page()]);
-      }
-    } catch (e) {
-      HelmLogger.error('Error initializing NestedTabsNavigator: $e');
-    } finally {
-      _isInitializing = false;
-    }
-  }
-
-  @pragma('vm:prefer-inline')
-  void _handleEmptyState(ModalRoute<Object?>? parentRoute) {
-    if (_isInitializing) return;
-    // Handle empty state with post-frame callback for initialization
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || _isInitializing) return;
-      _isInitializing = true;
-
-      try {
-        final currentArgs = parentRoute?.settings.arguments;
-        if (currentArgs is $RouteMeta && (currentArgs.children?.isEmpty ?? true)) {
-          final parentName = parentRoute?.settings.name;
-          if (parentName != null && _activeIndex < widget.tabs.length) {
-            final tabToReset = widget.tabs[_activeIndex];
-            final delegate = HelmRouter.delegateOf(context);
-            delegate.replaceNestedStack(parentName, [tabToReset.page()]);
-          }
-        }
-      } finally {
-        _isInitializing = false;
-      }
-    });
-  }
-
-  @pragma('vm:prefer-inline')
-  int _calculateActiveIndex(NavigationState nestedPages) {
-    if (nestedPages.isEmpty) return 0;
-    final firstPageName = nestedPages.first.name;
-    return firstPageName != null ? (_pathToIndexCache[firstPageName] ?? 0) : 0;
-  }
-
-  void _onTabPressed(int newIndex) {
-    if (newIndex < 0 || newIndex >= widget.tabs.length) return;
-
-    final parentRoute = ModalRoute.of(context);
-    final parentName = parentRoute?.settings.name;
-    if (parentName == null) return;
-
-    final newTabRoute = widget.tabs[newIndex];
-
-    // Handle same tab selection
-    if (_activeIndex == newIndex) {
+    final NavigationState next;
+    if (index == _activeIndex) {
       if (!widget.clearStackOnDoubleTap) return;
-      final delegate = HelmRouter.delegateOf(context);
-      delegate.replaceNestedStack(parentName, [newTabRoute.page()]);
-      return;
+      next = [widget.tabs[index].page()];
+    } else {
+      if (!widget.cacheTabState) _stacks.remove(_activeIndex);
+      next = _stacks[index] ?? [widget.tabs[index].page()];
     }
-
-    final delegate = HelmRouter.delegateOf(context);
-    final parentArgs = parentRoute?.settings.arguments;
-
-    // Cache current tab state if enabled
-    if (widget.cacheTabState && _activeIndex < widget.tabs.length && parentArgs is $RouteMeta) {
-      final currentTabRoute = widget.tabs[_activeIndex];
-      final nestedPages = parentArgs.children;
-      if (nestedPages != null) _tabStacks[currentTabRoute] = nestedPages;
-    }
-
-    // Switch to new tab
-    final restoredStack = _tabStacks[newTabRoute] ?? [newTabRoute.page()];
-    delegate.replaceNestedStack(parentName, restoredStack);
-  }
-
-  @pragma('vm:prefer-inline')
-  void _onDidRemovePage(Page<Object?> page) {
-    if (mounted) HelmRouter.delegateOf(context).onDidRemovePage(page);
+    delegate.change((pages) => pages.updateAt(path, (_) => next));
   }
 
   @override
-  Widget build(BuildContext context) => AnimatedBuilder(
-        animation: HelmRouter.delegateOf(context),
-        builder: (context, child) {
-          try {
-            final parentRoute = ModalRoute.of(context);
-            final parentArgs = parentRoute?.settings.arguments;
+  Widget build(BuildContext context) {
+    final scope =
+        _scopeOf(context, 'NestedTabsNavigator', () => widget.initialState ?? [widget.tabs[_activeIndex].page()]);
+    final children = scope.page.children ?? const <HelmPage>[];
+    if (children.isNotEmpty) {
+      final index = widget.tabs.indexOf(children.first.route);
+      if (index >= 0) _activeIndex = index;
+      _stacks[_activeIndex] = children;
+    }
 
-            if (parentArgs is! $RouteMeta) {
-              HelmLogger.error('Warning: Parent args is null in NestedTabsNavigator');
-              return const SizedBox.shrink();
-            }
-
-            final nestedPages = parentArgs.children;
-            if (nestedPages == null || nestedPages.isEmpty) {
-              _handleEmptyState(parentRoute);
-              return widget.builder(context, const SizedBox.shrink(), _activeIndex, _onTabPressed);
-            }
-
-            _activeIndex = _calculateActiveIndex(nestedPages);
-
-            return widget.builder(
-              context,
-              Navigator(
-                key: _navigationKey,
-                pages: nestedPages,
-                onDidRemovePage: _onDidRemovePage,
+    final transitionDelegate = widget.transitionDelegate ?? delegate.transitionDelegate;
+    final body = IndexedStack(
+      index: _activeIndex,
+      children: [
+        for (var i = 0; i < widget.tabs.length; i++)
+          if (_stacks[i] case final stack? when stack.isNotEmpty)
+            TickerMode(
+              enabled: i == _activeIndex,
+              child: Navigator(
+                key: _navigatorKeys.putIfAbsent(i, GlobalKey<NavigatorState>.new),
+                pages: buildPages(stack, i == _activeIndex ? stackPath : null),
+                transitionDelegate: transitionDelegate,
+                observers: _observers.putIfAbsent(i, () => widget.observersBuilder?.call(i) ?? const []),
+                onDidRemovePage: (page) => removePage(delegate, i == _activeIndex ? stackPath : null, page),
               ),
-              _activeIndex,
-              _onTabPressed,
-            );
-          } catch (e) {
-            HelmLogger.error('Error building NestedTabsNavigator: $e');
-            return widget.builder(context, const SizedBox.shrink(), _activeIndex, _onTabPressed);
-          }
-        },
-      );
+            )
+          else
+            const SizedBox.shrink(),
+      ],
+    );
+    return widget.builder(context, body, _activeIndex, _onTabPressed);
+  }
+}
+
+/// Registers a nested navigator with the delegate, so that system back can pop it, and fills an
+/// empty nested stack.
+mixin _NestedHostMixin<T extends StatefulWidget> on State<T> implements NestedHost {
+  HelmRouterDelegate? _delegate;
+  bool _fillScheduled = false;
+
+  HelmRouterDelegate get delegate => _delegate!;
+
+  @override
+  StackPath? stackPath;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final next = HelmRouter.delegateOf(context);
+    if (identical(next, _delegate)) return;
+    if (_delegate != null) nestedHosts(_delegate!).remove(this);
+    _delegate = next;
+    nestedHosts(next).add(this);
+  }
+
+  @override
+  void dispose() {
+    if (_delegate != null) nestedHosts(_delegate!).remove(this);
+    super.dispose();
+  }
+
+  /// Reads the enclosing page. When its nested stack is empty, sets it to [initialStack] after
+  /// this frame. [Router.neglect] makes the URL update replace the current history entry.
+  HelmPageScope _scopeOf(BuildContext context, String widgetName, NavigationState Function() initialStack) {
+    final scope = HelmPageScope.maybeOf(context);
+    if (scope == null) throw FlutterError('$widgetName must be inside a page built by Helm.');
+    stackPath = scope.childrenPath;
+
+    final isEmpty = scope.page.children?.isEmpty ?? true;
+    if (isEmpty && stackPath != null && !_fillScheduled) {
+      _fillScheduled = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _fillScheduled = false;
+        final path = stackPath;
+        if (!mounted || path == null) return;
+        Router.neglect(
+          context,
+          () => delegate.change((pages) => pages.updateAt(path, (stack) => stack.isEmpty ? initialStack() : stack)),
+        );
+      });
+    }
+    return scope;
+  }
 }

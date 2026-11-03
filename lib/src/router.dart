@@ -2,13 +2,12 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 
 import 'delegate.dart';
-import 'initial_uri_provider.dart';
 import 'logger.dart';
 import 'parser.dart';
 import 'route.dart';
 import 'state.dart';
 
-/// The main router configuration for the application that brings together the delegate, parser, and navigation guards.
+/// The router configuration. It connects the delegate, the parser, and the platform URL.
 class HelmRouter extends RouterConfig<NavigationState> {
   factory HelmRouter({
     required List<Routable> routes,
@@ -19,125 +18,74 @@ class HelmRouter extends RouterConfig<NavigationState> {
     bool enableLogs = kDebugMode,
     bool logNavigationStack = false,
   }) {
-    assert(() {
-      if (routes.isEmpty) throw ArgumentError('Routes list cannot be empty');
-      final seenPaths = <String>{};
-      final seenParams = <String>{};
-      final paramRegex = RegExp(r'\{(\w+)\+?\}');
+    assert(_validateRoutes(routes));
 
-      for (final route in routes) {
-        final path = route.path;
-        if (path.isEmpty) throw ArgumentError('Route path cannot be empty.');
-        if (!path.startsWith('/')) throw ArgumentError('Route path must start with "/". Offending route: "$path"');
-        if (path.trim() != path) throw ArgumentError('Route path cannot contain leading or trailing whitespace: "$path"');
-        if (path.contains(RegExp(r'\s'))) throw ArgumentError('Route path cannot contain whitespace characters: "$path"');
-        if (path.contains('//')) throw ArgumentError('Route path cannot contain empty segments ("//"): "$path"');
-        if (path == '/-') throw ArgumentError('Route path cannot be "/-".');
-        if (!seenPaths.add(path)) throw ArgumentError('Duplicate route path found: "$path"');
-        for (final match in paramRegex.allMatches(path)) {
-          final paramName = match.group(1);
-          if (paramName != null && !seenParams.add(paramName)) {
-            throw ArgumentError(
-                'Duplicate path parameter name found: "{$paramName}". Parameter names must be unique across all routes.');
-          }
-        }
-      }
-      return true;
-    }());
-
-    enableLogs ? HelmLogger.on() : HelmLogger.off();
-    logNavigationStack ? HelmLogger.onStack() : HelmLogger.offStack();
-
-    final routeParser = HelmRouteParser(routes);
-    final delegate = HelmRouterDelegate(
-      guards: guards,
-      revalidate: refresh,
-      observers: observers,
-      defaultTransitionDelegate: defaultTransitionDelegate,
-      routeParser: routeParser,
+    final routeParser = HelmRouteParser(
+      routes,
+      logger: HelmLogger(enabled: enableLogs, logStack: logNavigationStack),
     );
-
-    final initialUri = getInitialUri();
-    final provider = PlatformRouteInformationProvider(
-      initialRouteInformation: RouteInformation(uri: initialUri),
-    );
-
     return HelmRouter._(
-      delegate: delegate,
+      delegate: HelmRouterDelegate(
+        routeParser: routeParser,
+        guards: guards,
+        observers: observers,
+        refresh: refresh,
+        defaultTransitionDelegate: defaultTransitionDelegate,
+      ),
       routeInformationParser: HelmRouteInformationParser(routeParser: routeParser),
       backButtonDispatcher: RootBackButtonDispatcher(),
-      routeInformationProvider: provider,
+      routeInformationProvider: HelmRouteInformationProvider(
+        initialRouteInformation: RouteInformation(uri: _initialUri()),
+      ),
     );
   }
 
   const HelmRouter._({
-    required HelmRouterDelegate delegate,
+    required this.delegate,
     required HelmRouteInformationParser super.routeInformationParser,
     required BackButtonDispatcher super.backButtonDispatcher,
     required RouteInformationProvider super.routeInformationProvider,
   }) : super(routerDelegate: delegate);
 
-  static HelmRouterDelegate delegateOf(BuildContext context) {
-    final delegate = Router.of(context).routerDelegate;
-    assert(
-      delegate is HelmRouterDelegate,
-      'BuildContext does not contain an HelmRouterDelegate.',
-    );
-    return delegate as HelmRouterDelegate;
-  }
+  final HelmRouterDelegate delegate;
 
-  // CORE
+  static HelmRouterDelegate delegateOf(BuildContext context) => switch (Router.of(context).routerDelegate) {
+        final HelmRouterDelegate delegate => delegate,
+        _ => throw FlutterError('HelmRouter.delegateOf() was called with a context that is not inside a HelmRouter.'),
+      };
 
-  /// Returns the current [Uri] that represents the live navigation stack.
+  // STATE
+
+  /// The URL of the current state.
   static Uri? currentUri(BuildContext context) => delegateOf(context).currentUri;
 
-  /// Returns the [Map<String, String>] with all query params of the live navigation state.
+  /// Query params of the current state.
   static Map<String, String> currentQueryParams(BuildContext context) => delegateOf(context).currentQueryParams;
 
-  /// Returns the [Map<String, String>] with all path params of the live navigation state.
+  /// Path params of the current state. See [HelmRouterDelegate.currentPathParams].
   static Map<String, String> currentPathParams(BuildContext context) => delegateOf(context).currentPathParams;
 
-  /// Returns the current [NavigationState]
+  /// The current state.
   static NavigationState state(BuildContext context) => delegateOf(context).currentConfiguration;
 
+  // CHANGES
+
+  /// Replaces the state with the result of [fn].
   static void change(BuildContext context, NavigationGuard fn) => delegateOf(context).change(fn);
 
-  static void changeQueryParams(BuildContext context, {required Map<String, String> queryParams}) =>
-      delegateOf(context).change((current) {
-        NavigationState updateRecursive(NavigationState pages) {
-          return pages.map((page) {
-            final meta = page.meta;
-            if (meta == null) return page;
+  /// Sets query params on all pages. An empty value removes the key.
+  static void changeQueryParams(BuildContext context, {required Map<String, String> queryParams}) => change(
+      context,
+      (pages) => pages.mapPages((page) {
+            final updated = {...page.queryParams};
+            queryParams.forEach((key, value) => value.isEmpty ? updated.remove(key) : updated[key] = value);
+            return mapEquals(updated, page.queryParams) ? page : page.copyWith(queryParams: updated);
+          }));
 
-            final updatedQueryParams = Map<String, String>.from(meta.queryParams);
-            queryParams.forEach((key, value) {
-              if (value.isEmpty) {
-                updatedQueryParams.remove(key);
-              } else {
-                updatedQueryParams[key] = value;
-              }
-            });
-
-            final updatedChildren = meta.children != null ? updateRecursive(meta.children!) : null;
-            final queryChanged = !mapEquals(meta.queryParams, updatedQueryParams);
-            final childrenChanged = updatedChildren != null && !listEquals(meta.children, updatedChildren);
-
-            if (!queryChanged && !childrenChanged) return page;
-
-            final newMeta = meta.copyWith(
-              queryParams: updatedQueryParams,
-              children: childrenChanged ? () => updatedChildren : null,
-            );
-
-            return meta.route.build(page.key, page.name!, newMeta);
-          }).toList();
-        }
-
-        return updateRecursive(current);
-      });
-
-  // BASICS
-
+  /// Pushes [route] on the deepest active stack, or on the root stack when [rootNavigator] is true.
+  ///
+  /// Parent routes that are not in the target stack are added first, for example `/products`
+  /// before `/products/{pid}`. Current query params are merged into the new pages.
   static void push(
     BuildContext context,
     Routable route, {
@@ -146,72 +94,28 @@ class HelmRouter extends RouterConfig<NavigationState> {
     bool rootNavigator = false,
   }) {
     final delegate = delegateOf(context);
-    final parser = delegate.routeParser;
-
-    delegate.change((current) {
-      final currentQueryParams = delegate.currentQueryParams;
-      final mergedQueryParams = {...currentQueryParams, ...queryParams};
-
-      NavigationState findDeepestStack(NavigationState pages) {
-        if (rootNavigator || pages.isEmpty) return pages;
-        final last = pages.last;
-        final children = last.meta?.children;
-        if (children != null) return findDeepestStack(children);
-        return pages;
-      }
-
-      final deepestStack = findDeepestStack(current);
-      final lastPageOnStack = deepestStack.isNotEmpty ? deepestStack.last : null;
-      final lastRouteOnStack = lastPageOnStack?.meta?.route;
-
-      final pagesToAdd = <Page<Object?>>[];
-
-      if (route.isArbitrary && route == lastRouteOnStack) {
-        pagesToAdd.add(route.page(pathParams: pathParams, queryParams: mergedQueryParams));
-      } else {
-        final parentPages = parser.getParentStackFor(route, pathParams: pathParams, queryParams: mergedQueryParams);
-        for (final parentPage in parentPages) {
-          if (lastPageOnStack == null || parentPage.name != lastPageOnStack.name) {
-            pagesToAdd.add(parentPage);
-          }
-        }
-        pagesToAdd.add(route.page(pathParams: pathParams, queryParams: mergedQueryParams));
-      }
-
-      NavigationState addAllToDeepest(NavigationState stack, List<Page<Object?>> newPages) {
-        if (rootNavigator || stack.isEmpty) return <Page<Object?>>[...stack, ...newPages];
-
-        final last = stack.last;
-        final lastArgs = last.meta;
-        if (lastArgs == null) return <Page<Object?>>[...stack, ...newPages];
-
-        final children = lastArgs.children;
-        if (children != null) {
-          final updatedChildren = addAllToDeepest(children, newPages);
-          if (listEquals(updatedChildren, children)) return stack;
-
-          final newArgs = lastArgs.copyWith(children: () => updatedChildren);
-          final newParent = newArgs.route.build(last.key, last.name!, newArgs);
-          return [...stack.sublist(0, stack.length - 1), newParent];
-        }
-        return <Page<Object?>>[...stack, ...newPages];
-      }
-
-      return addAllToDeepest(current, pagesToAdd);
+    delegate.change((pages) {
+      final query = {...delegate.currentQueryParams, ...queryParams};
+      final page = route.page(pathParams: pathParams, queryParams: query);
+      return pages.updateAt(rootNavigator ? const [] : pages.deepestPath, (stack) {
+        if (route.isArbitrary && stack.lastOrNull?.route == route) return [...stack, page];
+        final names = {for (final p in stack) p.name};
+        final parents = delegate.routeParser.parentPagesFor(route, pathParams: pathParams, queryParams: query);
+        return [...stack, ...parents.where((p) => !names.contains(p.name)), page];
+      });
     });
   }
 
-  static void pop(BuildContext context) => delegateOf(context).popRoute();
+  /// Pops like the system back button. Returns false when nothing was popped.
+  static Future<bool> pop(BuildContext context) => delegateOf(context).popRoute();
 
-  // HELPERS
-
+  /// Replaces the state with the root route.
   static void popUntilRoot(BuildContext context) {
     final delegate = delegateOf(context);
-    final rootState = delegate.routeParser.parseUri(Uri.parse('/'));
-    delegate.change((_) => rootState);
+    delegate.change((_) => delegate.routeParser.parseUri(Uri(path: '/')));
   }
 
-  static void replaceAll(BuildContext context, NavigationState pages) => delegateOf(context).change((_) => pages);
+  static void replaceAll(BuildContext context, NavigationState pages) => change(context, (_) => pages);
 
   static void replaceWithRoute(
     BuildContext context,
@@ -219,5 +123,60 @@ class HelmRouter extends RouterConfig<NavigationState> {
     Map<String, String> pathParams = const <String, String>{},
     Map<String, String> queryParams = const <String, String>{},
   }) =>
-      delegateOf(context).change((_) => <Page<Object?>>[route.page(pathParams: pathParams, queryParams: queryParams)]);
+      change(context, (_) => [route.page(pathParams: pathParams, queryParams: queryParams)]);
+}
+
+/// Replaces the platform history entry when the router only normalizes a URL that the platform
+/// just reported, for example when it adds the initial nested stack. Other changes push a new entry.
+class HelmRouteInformationProvider extends PlatformRouteInformationProvider {
+  HelmRouteInformationProvider({required super.initialRouteInformation});
+
+  bool _platformReported = true;
+
+  @override
+  Future<bool> didPushRouteInformation(RouteInformation routeInformation) {
+    _platformReported = true;
+    return super.didPushRouteInformation(routeInformation);
+  }
+
+  @override
+  void routerReportsNewRouteInformation(
+    RouteInformation routeInformation, {
+    RouteInformationReportingType type = RouteInformationReportingType.none,
+  }) {
+    final normalizes = _platformReported && type == RouteInformationReportingType.none;
+    _platformReported = false;
+    super.routerReportsNewRouteInformation(
+      routeInformation,
+      type: normalizes ? RouteInformationReportingType.neglect : type,
+    );
+  }
+}
+
+/// The URL the platform opened the app with. On the web, the URL strategy removes the
+/// `<base href>` prefix, so an app served from a sub-path gets its own path.
+Uri _initialUri() {
+  final name = WidgetsFlutterBinding.ensureInitialized().platformDispatcher.defaultRouteName;
+  // `//shop` would parse `shop` as a host, so keep exactly one leading slash.
+  return Uri.tryParse(name.replaceFirst(RegExp('^/*'), '/')) ?? Uri(path: '/');
+}
+
+bool _validateRoutes(List<Routable> routes) {
+  if (routes.isEmpty) throw ArgumentError('Routes list cannot be empty');
+  final seenPaths = <String>{};
+  for (final route in routes) {
+    final path = route.path;
+    if (path.isEmpty) throw ArgumentError('Route path cannot be empty.');
+    if (!path.startsWith('/')) throw ArgumentError('Route path must start with "/". Offending route: "$path"');
+    if (path.contains(RegExp(r'\s'))) throw ArgumentError('Route path cannot contain whitespace: "$path"');
+    if (path.contains('//')) throw ArgumentError('Route path cannot contain empty segments ("//"): "$path"');
+    if (path == '/-') throw ArgumentError('Route path cannot be "/-".');
+    if (path.contains('!') || path.contains('~')) {
+      throw ArgumentError('Route path cannot contain "!" or "~", the URL grammar uses them: "$path"');
+    }
+    // `/a/{x}` and `/a/{y}` match the same URLs, so compare paths without param names.
+    final shape = path.replaceAllMapped(RegExp(r'\{\w+(\+?)\}'), (m) => '{${m.group(1)}}');
+    if (!seenPaths.add(shape)) throw ArgumentError('Duplicate route path found: "$path"');
+  }
+  return true;
 }

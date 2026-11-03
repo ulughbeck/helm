@@ -1,331 +1,149 @@
-import 'dart:async';
-import 'dart:collection';
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 
-import 'logger.dart';
+import 'pages.dart';
 import 'parser.dart';
-import 'route.dart';
 import 'state.dart';
 
-/// A type alias for a navigation guard, a function that can transform the page stack.
+/// Transforms the navigation state on every change. Guards run in order.
 typedef NavigationGuard = NavigationState Function(NavigationState pages);
 
-/// The core state manager for the router; it holds the page stack and builds the `Navigator`.
-class HelmRouterDelegate extends RouterDelegate<NavigationState>
-    with ChangeNotifier, PopNavigatorRouterDelegateMixin<NavigationState> {
+/// Holds the navigation state and builds the root [Navigator].
+class HelmRouterDelegate extends RouterDelegate<NavigationState> with ChangeNotifier {
   HelmRouterDelegate({
-    required this.guards,
-    required this.revalidate,
-    required this.observers,
     required this.routeParser,
-    required TransitionDelegate<Object?> defaultTransitionDelegate,
-  }) : _transitionDelegate = _PerRouteTransitionDelegate(defaultDelegate: defaultTransitionDelegate) {
-    revalidate?.addListener(_revalidateState);
+    this.guards = const [],
+    this.observers = const [],
+    Listenable? refresh,
+    TransitionDelegate<Object?> defaultTransitionDelegate = const DefaultTransitionDelegate<Object?>(),
+  })  : transitionDelegate = _PerRouteTransitionDelegate(defaultTransitionDelegate),
+        _refresh = refresh {
+    _refresh?.addListener(_revalidate);
   }
 
-  final List<NavigationGuard> guards;
-  final Listenable? revalidate;
-  final List<NavigatorObserver> observers;
-  final _PerRouteTransitionDelegate _transitionDelegate;
   final HelmRouteParser routeParser;
+  final List<NavigationGuard> guards;
+  final List<NavigatorObserver> observers;
 
-  NavigationState _pages = const <Page<Object?>>[];
-  bool _revalidationNeeded = false;
-  bool _mounted = true;
+  /// Uses the transition delegate of the top route, or the default one.
+  final TransitionDelegate<Object?> transitionDelegate;
 
-  // CORE
+  final Listenable? _refresh;
+  final navigatorKey = GlobalKey<NavigatorState>();
 
-  @override
-  final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
+  NavigationState _pages = const [];
+  Uri? _currentUri;
 
-  Uri? currentUri;
+  /// The URL of the current state.
+  Uri? get currentUri => _currentUri;
 
   @override
   NavigationState get currentConfiguration => _pages;
 
+  /// Query params of all pages. A later page wins for a repeated key.
   Map<String, String> get currentQueryParams {
-    final allQueryParams = <String, String>{};
-    void collect(NavigationState pages) {
-      for (final page in pages) {
-        final meta = page.meta;
-        if (meta != null) {
-          allQueryParams.addAll(meta.queryParams);
-          if (meta.children != null) {
-            collect(meta.children!);
-          }
-        }
-      }
-    }
-
-    collect(_pages);
-    return allQueryParams;
+    final result = <String, String>{};
+    _pages.mapPages((page) {
+      result.addAll(page.queryParams);
+      return page;
+    });
+    return result;
   }
 
+  /// Path params of all pages. Keys get the occurrence index, for example `id-0` and `id-1`.
   Map<String, String> get currentPathParams {
-    final allPathParams = <String, String>{};
-    final keyCounts = <String, int>{};
+    final result = <String, String>{};
+    final counts = <String, int>{};
     void collect(NavigationState pages) {
       for (final page in pages) {
-        final meta = page.meta;
-        if (meta != null) {
-          meta.pathParams.forEach((key, value) {
-            final count = keyCounts[key] ?? 0;
-            final newKey = '$key-$count';
-            allPathParams[newKey] = value;
-            keyCounts[key] = count + 1;
-          });
-
-          if (meta.children != null) {
-            collect(meta.children!);
-          }
-        }
+        page.pathParams.forEach((key, value) {
+          result['$key-${counts.update(key, (n) => n + 1, ifAbsent: () => 0)}'] = value;
+        });
+        if (page.children != null) collect(page.children!);
       }
     }
 
     collect(_pages);
-    return allPathParams;
+    return result;
   }
 
   @override
-  Future<void> setNewRoutePath(NavigationState pages) {
-    final newPages = _applyGuards(pages);
-    if (listEquals(_pages, newPages)) return SynchronousFuture(null);
-    _pages = UnmodifiableListView(newPages);
-    currentUri = routeParser.restoreUri(_pages);
+  Future<void> setNewRoutePath(NavigationState configuration) {
+    _update(configuration);
     return SynchronousFuture(null);
   }
 
+  /// Replaces the state with the result of [fn], then runs the guards.
   void change(NavigationGuard fn) {
-    final newPages = fn(NavigationState.from(_pages));
-    final guardedPages = _applyGuards(newPages);
-    if (listEquals(_pages, guardedPages)) return;
-    _pages = UnmodifiableListView(guardedPages);
-    currentUri = routeParser.restoreUri(_pages);
-    notifyListeners();
-    HelmLogger.msg('current path: $currentUri');
-    if (HelmLogger.logStack) HelmLogger.msg(_pages.toPrettyString);
+    if (_update(fn(List.of(_pages)))) notifyListeners();
   }
 
-  NavigationState _applyGuards(NavigationState pages) {
-    if (guards.isEmpty) return pages;
-    var current = pages;
-    for (final guard in guards) {
-      current = guard(current);
-    }
-    return current;
+  bool _update(NavigationState pages) {
+    final next = guards.fold(pages, (current, guard) => guard(current));
+    if (listEquals(next, _pages)) return false;
+    _pages = List.unmodifiable(next);
+    _currentUri = routeParser.restoreUri(_pages);
+    routeParser.logger
+      ..msg('current path: $_currentUri')
+      ..stack(_pages);
+    return true;
   }
 
-  void _revalidateState() {
-    _revalidationNeeded = true;
-    notifyListeners();
-  }
+  void _revalidate() => change((pages) => pages);
 
-  // NESTED NAVIGATORS
-
-  void prepareNestedNavigator(String parentRouteName) =>
-      change((current) => _prepareNestedNavigatorRecursive(current, parentRouteName));
-
-  NavigationState _prepareNestedNavigatorRecursive(NavigationState pages, String parentRouteName) {
-    var hasChanges = false;
-    final result = NavigationState.generate(pages.length, (i) {
-      final page = pages[i];
-      final args = page.meta;
-      if (args == null) return page;
-
-      // case 1: this is the parent that needs an empty child stack
-      if (page.name == parentRouteName && args.children == null) {
-        hasChanges = true;
-        final newArgs = args.copyWith(children: () => const <Page<Object?>>[]);
-        return page.meta!.route.build(page.key, page.name!, newArgs);
-      }
-
-      // case 2: recurse into children
-      final children = args.children;
-      if (children != null && children.isNotEmpty) {
-        final updated = _prepareNestedNavigatorRecursive(children, parentRouteName);
-        if (!listEquals(updated, children)) {
-          hasChanges = true;
-          final newArgs = args.copyWith(children: () => updated);
-          return page.meta!.route.build(page.key, page.name!, newArgs);
-        }
-      }
-      return page;
-    });
-
-    return hasChanges ? result : pages;
-  }
-
-  void setInitialNestedRoute(String parentRouteName, NavigationState initialState) =>
-      change((current) => _setInitialNestedRouteRecursive(current, parentRouteName, initialState));
-
-  NavigationState _setInitialNestedRouteRecursive(
-      NavigationState pages, String parentRouteName, NavigationState initialState) {
-    for (var i = 0; i < pages.length; i++) {
-      final page = pages[i];
-      final args = page.meta;
-      if (args == null) continue;
-
-      // case 1: we found the target parent page.
-      if (page.name == parentRouteName && (args.children == null || args.children!.isEmpty)) {
-        final newArgs = args.copyWith(children: () => initialState);
-        final result = NavigationState.from(pages);
-        result[i] = page.meta!.route.build(page.key, page.name!, newArgs);
-        return result;
-      }
-
-      // case 2: recurse into children
-      final children = args.children;
-      if (children != null && children.isNotEmpty) {
-        final updated = _setInitialNestedRouteRecursive(children, parentRouteName, initialState);
-        if (!listEquals(updated, children)) {
-          final newArgs = args.copyWith(children: () => updated);
-          final result = NavigationState.from(pages);
-          result[i] = page.meta!.route.build(page.key, page.name!, newArgs);
-          return result;
-        }
-      }
-    }
-    return pages;
-  }
-
-  void replaceNestedStack(String parentRouteName, NavigationState nestedPages) =>
-      change((current) => _updateNestedStack(current, parentRouteName, nestedPages));
-
-  NavigationState _updateNestedStack(NavigationState pages, String parentRouteName, NavigationState nestedPages) {
-    for (var i = 0; i < pages.length; i++) {
-      final page = pages[i];
-      final args = page.meta;
-
-      if (page.name == parentRouteName) {
-        final newArgs = args!.copyWith(children: () => nestedPages);
-        final result = NavigationState.from(pages);
-        result[i] = page.meta!.route.build(page.key, page.name!, newArgs);
-        return result;
-      }
-
-      final children = args?.children;
-      if (children != null && children.isNotEmpty) {
-        final updatedChildren = _updateNestedStack(children, parentRouteName, nestedPages);
-        if (!listEquals(updatedChildren, children)) {
-          final newArgs = args!.copyWith(children: () => updatedChildren);
-          final result = NavigationState.from(pages);
-          result[i] = page.meta!.route.build(page.key, page.name!, newArgs);
-          return result;
-        }
-      }
-    }
-
-    return pages;
-  }
-
-  // POP
-
+  /// Pops the deepest active navigator. A navigator with one page passes the pop to its parent.
+  ///
+  /// It uses [NavigatorState.maybePop], so [PopScope] and pageless routes such as dialogs work.
   @override
-  Future<bool> popRoute() {
-    if (_pages.isEmpty) return Future.value(false);
-
-    final lastPage = _pages.last;
-    final lastArgs = lastPage.meta;
-    final children = lastArgs?.children;
-
-    if (children != null && children.isNotEmpty) {
-      change(_popDeepestPage);
-      return Future.value(true);
+  Future<bool> popRoute() async {
+    for (final navigator in _activeNavigators().reversed) {
+      if (await navigator.maybePop()) return true;
     }
-
-    if (_pages.length > 1) {
-      change((pages) => pages.sublist(0, pages.length - 1));
-      return Future.value(true);
-    }
-
-    return Future.value(false);
+    return false;
   }
 
-  NavigationState _popDeepestPage(NavigationState pages) {
-    if (pages.isEmpty) return pages;
-
-    final lastPage = pages.last;
-    final args = lastPage.meta;
-    final children = args?.children;
-
-    if (children != null && children.isNotEmpty) {
-      final updatedChildren = _popDeepestPage(children);
-
-      if (!listEquals(updatedChildren, children)) {
-        final newArgs = args!.copyWith(children: () => updatedChildren);
-        final newLastPage = lastPage.meta!.route.build(lastPage.key, lastPage.name!, newArgs);
-        return [...pages.sublist(0, pages.length - 1), newLastPage];
-      }
+  /// The root navigator and the nested navigators on the active path, root first.
+  List<NavigatorState> _activeNavigators() {
+    final root = navigatorKey.currentState;
+    if (root == null) return const [];
+    final result = [root];
+    final hosts = nestedHosts(this);
+    final path = <int>[];
+    NavigationState stack = _pages;
+    while (stack.isNotEmpty && stack.last.children != null) {
+      path.add(stack.length - 1);
+      final host = hosts.where((h) => listEquals(h.stackPath, path)).firstOrNull;
+      final navigator = host?.navigator;
+      if (host == null || navigator == null || !(ModalRoute.isCurrentOf(host.context) ?? false)) break;
+      result.add(navigator);
+      stack = stack.last.children!;
     }
-    return pages.sublist(0, pages.length - 1);
+    return result;
   }
-
-  NavigationState? _removePage(NavigationState pages, Page<Object?> targetPage) {
-    // Fast path: check top level first with indexOf for better performance
-    final topLevelIndex = pages.indexOf(targetPage);
-    if (topLevelIndex != -1) {
-      final result = NavigationState.from(pages);
-      result.removeAt(topLevelIndex);
-      return result;
-    }
-
-    // Deep search in children
-    for (var i = 0; i < pages.length; i++) {
-      final page = pages[i];
-      final args = page.meta;
-      final children = args?.children;
-
-      if (children != null && children.isNotEmpty) {
-        final newChildren = _removePage(children, targetPage);
-        if (newChildren != null && !listEquals(newChildren, children)) {
-          final newArgs = args!.copyWith(children: () => newChildren);
-          final newPage = page.meta!.route.build(page.key, page.name!, newArgs);
-          final result = NavigationState.from(pages);
-          result[i] = newPage;
-          return result;
-        }
-      }
-    }
-
-    return null;
-  }
-
-  void onDidRemovePage(Page<Object?> page) => change((current) => _removePage(current, page) ?? current);
 
   @override
   void dispose() {
-    _mounted = false;
-    revalidate?.removeListener(_revalidateState);
-    _transitionDelegate.dispose();
+    _refresh?.removeListener(_revalidate);
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_revalidationNeeded) {
-      _revalidationNeeded = false;
-      scheduleMicrotask(() {
-        if (_mounted) change((state) => state);
-      });
-    }
     if (_pages.isEmpty) return const SizedBox.shrink();
     return Navigator(
       key: navigatorKey,
-      pages: _pages,
-      transitionDelegate: _transitionDelegate,
+      pages: buildPages(_pages, const []),
+      transitionDelegate: transitionDelegate,
       observers: observers,
-      onDidRemovePage: onDidRemovePage,
+      onDidRemovePage: (page) => removePage(this, const [], page),
     );
   }
 }
 
 class _PerRouteTransitionDelegate extends TransitionDelegate<Object?> {
-  _PerRouteTransitionDelegate({required this.defaultDelegate});
+  const _PerRouteTransitionDelegate(this.fallback);
 
-  final TransitionDelegate<Object?> defaultDelegate;
-  final Map<TransitionDelegate<Object?>, TransitionDelegate<Object?>> _delegateCache = {};
+  final TransitionDelegate<Object?> fallback;
 
   @override
   Iterable<RouteTransitionRecord> resolve({
@@ -333,27 +151,12 @@ class _PerRouteTransitionDelegate extends TransitionDelegate<Object?> {
     required Map<RouteTransitionRecord?, RouteTransitionRecord> locationToExitingPageRoute,
     required Map<RouteTransitionRecord?, List<RouteTransitionRecord>> pageRouteToPagelessRoutes,
   }) {
-    final topMostRoute = newPageRouteHistory.lastOrNull;
-    if (topMostRoute != null) {
-      final args = topMostRoute.route.settings.arguments;
-      if (args is $RouteMeta) {
-        final routeDelegate = args.route.transitionDelegate;
-        if (routeDelegate != null) {
-          final cachedDelegate = _delegateCache.putIfAbsent(routeDelegate, () => routeDelegate);
-          return cachedDelegate.resolve(
-            newPageRouteHistory: newPageRouteHistory,
-            locationToExitingPageRoute: locationToExitingPageRoute,
-            pageRouteToPagelessRoutes: pageRouteToPagelessRoutes,
-          );
-        }
-      }
-    }
-    return defaultDelegate.resolve(
+    final page = newPageRouteHistory.lastOrNull?.route.settings.arguments;
+    final delegate = (page is HelmPage ? page.route.transitionDelegate : null) ?? fallback;
+    return delegate.resolve(
       newPageRouteHistory: newPageRouteHistory,
       locationToExitingPageRoute: locationToExitingPageRoute,
       pageRouteToPagelessRoutes: pageRouteToPagelessRoutes,
     );
   }
-
-  void dispose() => _delegateCache.clear();
 }

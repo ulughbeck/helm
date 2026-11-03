@@ -3,9 +3,11 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_web_plugins/url_strategy.dart';
 import 'package:helm/helm.dart';
 
 void main() {
+  usePathUrlStrategy();
   runZonedGuarded<void>(
     () => runApp(const App()),
     (error, stackTrace) => print('Top level exception: $error'),
@@ -23,6 +25,7 @@ enum Routes with Routable {
   settings,
   someDialog,
   someSheet,
+  location,
   notFound;
 
   @override
@@ -37,6 +40,7 @@ enum Routes with Routable {
         Routes.settings => '/settings',
         Routes.someDialog => '/dialog',
         Routes.someSheet => '/sheet',
+        Routes.location => '/map/@{lat},{lng},{zoom}z',
         Routes.notFound => '/404',
       };
 
@@ -59,8 +63,46 @@ enum Routes with Routable {
         Routes.settings => const SettingsScreen(),
         Routes.someDialog => const SomeDialog(),
         Routes.someSheet => const SomeSheet(),
+        Routes.location => Scaffold(
+            appBar: AppBar(title: const Text('Location')),
+            body: Center(child: Text('lat ${pathParams['lat']}, lng ${pathParams['lng']}, zoom ${pathParams['zoom']}')),
+          ),
         Routes.notFound => const NotFoundScreen(),
       };
+
+  @override
+  TransitionDelegate<Object?>? get transitionDelegate => switch (this) {
+        Routes.location => const NoAnimationTransitionDelegate(),
+        _ => null,
+      };
+}
+
+/// Shows and removes pages without animation.
+class NoAnimationTransitionDelegate extends TransitionDelegate<Object?> {
+  const NoAnimationTransitionDelegate();
+
+  @override
+  Iterable<RouteTransitionRecord> resolve({
+    required List<RouteTransitionRecord> newPageRouteHistory,
+    required Map<RouteTransitionRecord?, RouteTransitionRecord> locationToExitingPageRoute,
+    required Map<RouteTransitionRecord?, List<RouteTransitionRecord>> pageRouteToPagelessRoutes,
+  }) {
+    final results = <RouteTransitionRecord>[];
+    for (final pageRoute in newPageRouteHistory) {
+      if (pageRoute.isWaitingForEnteringDecision) pageRoute.markForAdd();
+      results.add(pageRoute);
+    }
+    for (final exitingPageRoute in locationToExitingPageRoute.values) {
+      if (exitingPageRoute.isWaitingForExitingDecision) {
+        exitingPageRoute.markForComplete();
+        for (final route in pageRouteToPagelessRoutes[exitingPageRoute] ?? const <RouteTransitionRecord>[]) {
+          route.markForComplete();
+        }
+      }
+      results.add(exitingPageRoute);
+    }
+    return results;
+  }
 }
 
 class App extends StatefulWidget {
@@ -92,7 +134,7 @@ class _AppState extends State<App> {
   }
 
   @override
-  Widget build(BuildContext context) => MaterialApp.router(routerConfig: router);
+  Widget build(BuildContext context) => MaterialApp.router(restorationScopeId: 'app', routerConfig: router);
 }
 
 class SomeDialog extends StatelessWidget {
@@ -172,8 +214,12 @@ class HomeScreen extends StatelessWidget {
               child: const Text('Push Product 123'),
             ),
             ElevatedButton(
-              onPressed: () => HelmRouter.push(context, Routes.product),
-              child: const Text('Push Product no params'),
+              onPressed: () => HelmRouter.push(
+                context,
+                Routes.location,
+                pathParams: {'lat': '41.31', 'lng': '69.24', 'zoom': '12'},
+              ),
+              child: const Text('Push Location'),
             ),
             ElevatedButton(
               onPressed: () => HelmRouter.change(

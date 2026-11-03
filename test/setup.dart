@@ -3,30 +3,30 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:helm/helm.dart';
 
-Future<void> pumpTestApp(WidgetTester tester, {String initialRoute = '/', bool includeGuards = true}) async {
+/// Pumps the test app. The initial route goes through the platform, like a deep link.
+/// [guards] defaults to [defaultGuards].
+Future<HelmRouter> pumpTestApp(
+  WidgetTester tester, {
+  String initialRoute = '/',
+  List<Routable> routes = Routes.values,
+  List<NavigationGuard>? guards,
+  Listenable? refresh,
+}) async {
   tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, (call) async => null);
-  final router = HelmRouter(routes: routes, guards: includeGuards ? guards : []);
-  final initialUri = Uri.parse(initialRoute);
-  await tester.pumpWidget(MaterialApp.router(
-    routerDelegate: router.routerDelegate,
-    routeInformationParser: router.routeInformationParser,
-    routeInformationProvider: PlatformRouteInformationProvider(
-      initialRouteInformation: RouteInformation(uri: initialUri),
-    ),
-  ));
+  tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.navigation, (call) async => null);
+  tester.platformDispatcher.defaultRouteNameTestValue = initialRoute;
+  addTearDown(tester.platformDispatcher.clearDefaultRouteNameTestValue);
+
+  final router = HelmRouter(routes: routes, guards: guards ?? defaultGuards, refresh: refresh);
+  await tester.pumpWidget(MaterialApp.router(routerConfig: router));
   await tester.pumpAndSettle();
+  return router;
 }
 
 // --- Test App Setup ---
-const routes = Routes.values;
-final guards = <NavigationGuard>[
+final defaultGuards = <NavigationGuard>[
   (pages) => pages.isEmpty ? [Routes.notFound.page()] : pages,
-  (pages) {
-    if (pages.isNotEmpty && pages.first.name != Routes.home.path) {
-      return [Routes.home.page(), ...pages];
-    }
-    return pages;
-  },
+  (pages) => pages.isNotEmpty && pages.first.route != Routes.home ? [Routes.home.page(), ...pages] : pages,
 ];
 
 enum Routes with Routable {
@@ -64,38 +64,6 @@ enum Routes with Routable {
       };
 }
 
-class App extends StatefulWidget {
-  const App({super.key});
-  @override
-  State<App> createState() => _AppState();
-}
-
-class _AppState extends State<App> {
-  late final HelmRouter router;
-
-  @override
-  void initState() {
-    super.initState();
-    router = HelmRouter(
-      routes: Routes.values,
-      guards: [
-        // show not found page if no route found
-        (pages) => pages.isEmpty ? [Routes.notFound.page()] : pages,
-        // ensure home is always first route
-        (pages) {
-          if (pages.isNotEmpty && pages.first.name != Routes.home.path) {
-            return [Routes.home.page(), ...pages];
-          }
-          return pages;
-        },
-      ],
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) => MaterialApp.router(routerConfig: router);
-}
-
 class NotFoundScreen extends StatelessWidget {
   const NotFoundScreen({super.key});
   @override
@@ -117,17 +85,6 @@ class HomeScreen extends StatelessWidget {
               onPressed: () => HelmRouter.push(context, Routes.product, pathParams: {'pid': '123'}),
               child: const Text('Push Product 123'),
             ),
-            ElevatedButton(
-              onPressed: () => HelmRouter.push(context, Routes.product),
-              child: const Text('Push Product no params'),
-            ),
-            ElevatedButton(
-              onPressed: () => HelmRouter.replaceAll(context, [
-                Routes.shop.page(),
-                Routes.category.page(pathParams: {'cid': 'replaced'})
-              ]),
-              child: const Text('Repl'),
-            ),
           ]),
         ),
       );
@@ -145,7 +102,6 @@ class ShopScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) => NestedTabsNavigator(
         tabs: const [Routes.categories, Routes.products, Routes.settings],
-        initialTab: Routes.categories,
         builder: (context, child, selectedIndex, onTabPressed) => Scaffold(
           appBar: AppBar(title: Text('Shop Query: $queryParams')),
           body: child,
@@ -190,9 +146,10 @@ class CategoryScreen extends StatelessWidget {
               child: const Text('Push nested Product 999'),
             ),
             ElevatedButton(
-                onPressed: () => HelmRouter.push(context, Routes.settings, rootNavigator: true),
-                child: const Text('Push Root Settings')),
-            Expanded(child: child)
+              onPressed: () => HelmRouter.push(context, Routes.settings, rootNavigator: true),
+              child: const Text('Push Root Settings'),
+            ),
+            Expanded(child: child),
           ]),
         ),
       );
@@ -216,13 +173,5 @@ class ProductScreen extends StatelessWidget {
   const ProductScreen({required this.productId, super.key});
   final String productId;
   @override
-  Widget build(BuildContext context) => Scaffold(
-        appBar: AppBar(title: Text('Product: $productId')),
-        body: Center(
-          child: ElevatedButton(
-            onPressed: () => HelmRouter.push(context, Routes.product, pathParams: {'pid': '321'}),
-            child: const Text('Push Product 321'),
-          ),
-        ),
-      );
+  Widget build(BuildContext context) => Scaffold(appBar: AppBar(title: Text('Product: $productId')));
 }

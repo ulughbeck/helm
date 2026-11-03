@@ -1,20 +1,23 @@
 import 'dart:developer';
 
-import 'package:flutter/foundation.dart';
+import 'state.dart';
 
-/// Logger for router-related messages, enabled by default in debug mode.
-abstract class HelmLogger {
-  static bool _isEnabled = kDebugMode;
-  static void on() => _isEnabled = true;
-  static void off() => _isEnabled = false;
+/// Writes router messages to the developer log. Each [HelmRouter] has its own logger.
+class HelmLogger {
+  const HelmLogger({this.enabled = false, this.logStack = false});
 
-  static bool logStack = false;
-  static void onStack() => logStack = true;
-  static void offStack() => logStack = false;
+  final bool enabled;
 
-  static void msg(String message) {
-    if (_isEnabled) log(message, name: 'helm-router', time: DateTime.now());
+  /// Also logs the full navigation stack after each change.
+  final bool logStack;
+
+  void msg(String message) {
+    if (enabled) log(message, name: 'helm-router', time: DateTime.now());
   }
 
-  static void error(String message) => log(message, name: 'helm-router', time: DateTime.now());
+  void warn(String message) => msg('Warning: $message');
+
+  void stack(NavigationState pages) {
+    if (logStack) msg(pages.toPrettyString);
+  }
 }

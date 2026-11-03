@@ -20,7 +20,7 @@ platforms:
   web:
   windows:
 
-version: 0.0.1
+version: 0.0.2
 
 environment:
   sdk: ^3.6.2
@@ -28,14 +28,8 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  flutter_web_plugins:
-    sdk: flutter
-  web: ^1.1.1 
 
 dev_dependencies: 
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
-  
-flutter:
-  uses-material-design: true

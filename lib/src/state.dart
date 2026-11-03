@@ -1,157 +1,180 @@
-import 'package:flutter/widgets.dart';
+import 'package:flutter/foundation.dart';
 
 import 'route.dart';
 
-/// A type alias for the navigation state, which is a stack of pages representing the current navigation history.
-typedef NavigationState = List<Page<Object?>>;
+/// The navigation state: the root stack of pages. Pages with [HelmPage.children] hold nested stacks.
+typedef NavigationState = List<HelmPage>;
 
-extension $NavigationStateUtils on NavigationState {
-  /// Searches from the deepest, last-active page upwards and returns the **first** page that matches the provided [route].
-  Page<Object?>? findByRoute(Routable route) {
-    for (int i = length - 1; i >= 0; i--) {
+/// One entry of the navigation state. It is an immutable value: two pages with equal
+/// route, params, and children are equal.
+@immutable
+class HelmPage {
+  HelmPage({
+    required this.route,
+    Map<String, String> pathParams = const {},
+    Map<String, String> queryParams = const {},
+    NavigationState? children,
+  })  : pathParams = Map.unmodifiable(pathParams),
+        queryParams = Map.unmodifiable(queryParams),
+        children = children == null ? null : List.unmodifiable(children),
+        name = route.restorePath(pathParams);
+
+  final Routable route;
+  final Map<String, String> pathParams;
+  final Map<String, String> queryParams;
+
+  /// Nested stack shown by a [NestedNavigator] or [NestedTabsNavigator] on this page.
+  /// Null means the page has no nested stack yet.
+  final NavigationState? children;
+
+  /// The route path with path params filled in, for example `/products/123`.
+  final String name;
+
+  HelmPage copyWith({Map<String, String>? pathParams, Map<String, String>? queryParams}) => HelmPage(
+        route: route,
+        pathParams: pathParams ?? this.pathParams,
+        queryParams: queryParams ?? this.queryParams,
+        children: children,
+      );
+
+  HelmPage withChildren(NavigationState? children) =>
+      HelmPage(route: route, pathParams: pathParams, queryParams: queryParams, children: children);
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is HelmPage &&
+          other.route == route &&
+          mapEquals(other.pathParams, pathParams) &&
+          mapEquals(other.queryParams, queryParams) &&
+          listEquals(other.children, children);
+
+  @override
+  int get hashCode => Object.hash(
+        route,
+        _mapHash(pathParams),
+        _mapHash(queryParams),
+        children == null ? null : Object.hashAll(children!),
+      );
+
+  @override
+  String toString() => 'HelmPage($name)';
+}
+
+int _mapHash(Map<String, String> map) => Object.hashAllUnordered(map.entries.map((e) => Object.hash(e.key, e.value)));
+
+extension HelmNavigationState on NavigationState {
+  /// Searches from the deepest, last-active page upwards and returns the first page of [route].
+  HelmPage? findByRoute(Routable route) {
+    for (var i = length - 1; i >= 0; i--) {
       final page = this[i];
-      final meta = page.meta;
-      // 1. Before checking the current page, dive into its children first.
-      final children = meta?.children;
-      if (children != null && children.isNotEmpty) {
-        final pageFromChildren = children.findByRoute(route);
-        if (pageFromChildren != null) return pageFromChildren;
-      }
-      // 2. If not found in children, check the current page itself.
-      if (meta?.route == route) return page;
+      final found = page.children?.findByRoute(route);
+      if (found != null) return found;
+      if (page.route == route) return page;
     }
     return null;
   }
 
-  /// Searches from the deepest, last-active page upwards and removes the **first** page that matches the provided [route].
-  NavigationState removeByRoute(Routable route) {
-    ({NavigationState newPages, bool didRemove}) removeFirstRecursive(NavigationState pages, Routable route) {
-      for (int i = pages.length - 1; i >= 0; i--) {
-        var page = pages[i];
-        final meta = page.meta;
+  /// Searches from the deepest, last-active page upwards and removes the first page of [route].
+  NavigationState removeByRoute(Routable route) => _removeFirst(this, route) ?? this;
 
-        // 1. First, try to remove from the children recursively.
-        final children = meta?.children;
-        if (children != null && children.isNotEmpty) {
-          final result = removeFirstRecursive(children, route);
-          if (result.didRemove) {
-            // If a child was removed, rebuild the parent page and stop.
-            final newMeta = meta!.copyWith(children: () => result.newPages);
-            final newPage = meta.route.build(page.key, page.name!, newMeta);
-            final newPages = List<Page<Object?>>.from(pages);
-            newPages[i] = newPage;
-            return (newPages: newPages, didRemove: true);
-          }
-        }
-
-        // 2. If not in children, check if the current page is a match.
-        if (meta?.route == route) {
-          final newPages = List<Page<Object?>>.from(pages)..removeAt(i);
-          return (newPages: newPages, didRemove: true);
-        }
-      }
-
-      return (newPages: pages, didRemove: false);
-    }
-
-    return removeFirstRecursive(this, route).newPages;
-  }
-
-  /// Removes all pages matching the provided [route].
+  /// Removes all pages of [route].
   ///
-  /// - if `recursive` is `false`: Removes all matching pages from the deepest, last-active child stack only.
-  /// - if `recursive` is `true`: Removes all matching pages from all levels of the entire navigation stack.
-  NavigationState removeAllByRoute(Routable route, {bool recursive = false}) {
-    NavigationState removeAllRecursive(NavigationState pages, Routable route) {
-      final List<Page<Object?>> result = [];
-      for (int i = pages.length - 1; i >= 0; i--) {
-        var page = pages[i];
-        final meta = page.meta;
+  /// - `recursive: false` removes them from the deepest active stack only.
+  /// - `recursive: true` removes them from every stack.
+  NavigationState removeAllByRoute(Routable route, {bool recursive = false}) => recursive
+      ? mapPages((page) => page.route == route ? null : page)
+      : updateDeepest((stack) => stack.where((page) => page.route != route).toList());
 
-        if (meta?.route == route) continue;
-
-        final children = meta?.children;
-        if (children != null && children.isNotEmpty) {
-          final newChildren = removeAllRecursive(children, route);
-          if (newChildren.length != children.length) {
-            final newMeta = meta!.copyWith(children: () => newChildren);
-            page = meta.route.build(page.key, page.name!, newMeta);
-          }
-        }
-        result.insert(0, page);
+  /// Applies [transform] to every page, children first. Return null to remove a page.
+  ///
+  /// Unchanged lists and pages keep their identity.
+  NavigationState mapPages(HelmPage? Function(HelmPage page) transform) {
+    var changed = false;
+    final result = <HelmPage>[];
+    for (final page in this) {
+      var current = page;
+      final children = page.children;
+      if (children != null) {
+        final mapped = children.mapPages(transform);
+        if (!identical(mapped, children)) current = page.withChildren(mapped);
       }
-      return result;
+      final next = transform(current);
+      if (!identical(next, page)) changed = true;
+      if (next != null) result.add(next);
     }
-
-    NavigationState removeInDeepestLastStack(NavigationState pages, Routable route) {
-      if (pages.isEmpty) return pages;
-
-      var lastPage = pages.last;
-      final meta = lastPage.meta;
-      final children = meta?.children;
-
-      if (children != null && children.isNotEmpty) {
-        final newChildren = removeInDeepestLastStack(children, route);
-
-        if (newChildren.length != children.length) {
-          final newMeta = meta!.copyWith(children: () => newChildren);
-          final newLastPage = meta.route.build(lastPage.key, lastPage.name!, newMeta);
-          return [...pages.sublist(0, pages.length - 1), newLastPage];
-        } else {
-          return pages;
-        }
-      }
-
-      return pages.where((p) => p.meta?.route != route).toList();
-    }
-
-    return recursive ? removeAllRecursive(this, route) : removeInDeepestLastStack(this, route);
+    return changed ? result : this;
   }
+
+  /// Indices of the host pages that lead to the deepest active stack.
+  ///
+  /// The path follows the last page of each stack while that page has children.
+  List<int> get deepestPath {
+    final path = <int>[];
+    NavigationState stack = this;
+    while (stack.isNotEmpty && stack.last.children != null) {
+      path.add(stack.length - 1);
+      stack = stack.last.children!;
+    }
+    return path;
+  }
+
+  /// Replaces the stack at [path] with the result of [update].
+  ///
+  /// [path] holds the indices of the host pages from the root stack. An empty path is the root stack.
+  NavigationState updateAt(List<int> path, NavigationState Function(NavigationState stack) update) {
+    if (path.isEmpty) return update(this);
+    final index = path.first;
+    if (index < 0 || index >= length) return this;
+    final host = this[index];
+    final children = host.children ?? const <HelmPage>[];
+    final updated = children.updateAt(path.sublist(1), update);
+    if (identical(updated, children)) return this;
+    return [...this]..[index] = host.withChildren(updated);
+  }
+
+  /// Replaces the deepest active stack with the result of [update].
+  NavigationState updateDeepest(NavigationState Function(NavigationState stack) update) =>
+      updateAt(deepestPath, update);
 
   String get toPrettyString {
-    final buffer = StringBuffer();
-    if (isEmpty) {
-      buffer.writeln('navigation stack: (empty)');
-    } else {
-      buffer.writeln('navigation stack:');
-      _writePages(buffer, this);
-    }
+    if (isEmpty) return 'navigation stack: (empty)\n';
+    final buffer = StringBuffer('navigation stack:\n');
+    _writePages(buffer, this, '');
     return buffer.toString();
   }
+}
 
-  void _writePages(StringBuffer buffer, NavigationState pages, [String parentPrefix = '']) {
-    for (var i = 0; i < pages.length; i++) {
-      final page = pages[i];
-      final meta = page.meta;
-
-      final isFirst = i == 0;
-      final isLast = i == pages.length - 1;
-
-      final prefix = switch ((isFirst, isLast, pages.length)) {
-        (true, true, _) => '─', // only one item
-        (true, false, _) => '┌─', // first item in list
-        (false, true, _) => '└─', // last item
-        _ => '├─', // middle item
-      };
-
-      final childPrefix = parentPrefix + (isLast ? '  ' : '│ ');
-      final currentPrefix = parentPrefix + prefix;
-
-      if (meta == null) {
-        buffer.writeln('$currentPrefix ${page.name ?? 'unknown page'} (no meta)');
-        continue;
-      }
-
-      final hasChildren = meta.children != null && meta.children!.isNotEmpty;
-      final navigatorIndicator = (hasChildren ? ' (nested navigator)' : '') + (isFirst ? ' (root)' : '');
-
-      final params = <String, String>{...meta.pathParams, ...meta.queryParams};
-      final paramsString =
-          params.isNotEmpty ? ' {${params.entries.map((e) => '${e.key}: ${e.value}').join(', ')}}' : '';
-
-      buffer.writeln('$currentPrefix${page.name}$paramsString$navigatorIndicator');
-
-      if (hasChildren) _writePages(buffer, meta.children!, childPrefix);
+NavigationState? _removeFirst(NavigationState pages, Routable route) {
+  for (var i = pages.length - 1; i >= 0; i--) {
+    final page = pages[i];
+    final children = page.children;
+    if (children != null) {
+      final updated = _removeFirst(children, route);
+      if (updated != null) return [...pages]..[i] = page.withChildren(updated);
     }
+    if (page.route == route) return [...pages]..removeAt(i);
+  }
+  return null;
+}
+
+void _writePages(StringBuffer buffer, NavigationState pages, String parentPrefix) {
+  for (var i = 0; i < pages.length; i++) {
+    final page = pages[i];
+    final isFirst = i == 0;
+    final isLast = i == pages.length - 1;
+    final prefix = switch ((isFirst, isLast)) {
+      (true, true) => '─',
+      (true, false) => '┌─',
+      (false, true) => '└─',
+      _ => '├─',
+    };
+    final children = page.children;
+    final hasChildren = children != null && children.isNotEmpty;
+    final params = {...page.pathParams, ...page.queryParams};
+    final paramsString = params.isEmpty ? '' : ' {${params.entries.map((e) => '${e.key}: ${e.value}').join(', ')}}';
+    final markers = (hasChildren ? ' (nested navigator)' : '') + (isFirst ? ' (root)' : '');
+    buffer.writeln('$parentPrefix$prefix${page.name}$paramsString$markers');
+    if (hasChildren) _writePages(buffer, children, parentPrefix + (isLast ? '  ' : '│ '));
   }
 }

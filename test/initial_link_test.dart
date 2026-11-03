@@ -1,6 +1,4 @@
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:helm/helm.dart';
 
 import 'setup.dart';
 
@@ -84,16 +82,24 @@ void main() {
       expect(find.text('Settings'), findsOneWidget);
     });
 
-    testWidgets('Guard adds Home screen if not present', (tester) async {
-      await pumpTestApp(tester, initialRoute: '/shop');
+    testWidgets('Nested route deep link restores the full URL', (tester) async {
+      final router = await pumpTestApp(tester, initialRoute: '/category/laptops');
+      expect(router.delegate.currentUri.toString(), '/category/laptops/!settings');
+    });
 
-      final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-      final delegate = app.routerDelegate as HelmRouterDelegate;
+    testWidgets('Malformed URL does not hang and falls back to 404', (tester) async {
+      await pumpTestApp(tester, initialRoute: '/settings!');
+      expect(find.text('404 Not Found'), findsOneWidget);
+    });
+
+    testWidgets('Guard adds Home screen if not present', (tester) async {
+      final router = await pumpTestApp(tester, initialRoute: '/shop');
+      final delegate = router.delegate;
 
       // Check that the stack is [Home, Shop]
       expect(delegate.currentConfiguration.length, 2);
-      expect(delegate.currentConfiguration.first.meta?.route, Routes.home);
-      expect(delegate.currentConfiguration.last.meta?.route, Routes.shop);
+      expect(delegate.currentConfiguration.first.route, Routes.home);
+      expect(delegate.currentConfiguration.last.route, Routes.shop);
 
       // Visually, the shop screen should be on top
       expect(find.text('Shop Query: {}'), findsOneWidget);
