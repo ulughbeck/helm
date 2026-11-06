@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 
 import 'delegate.dart';
@@ -43,8 +44,7 @@ class _NestedNavigatorState extends State<NestedNavigator> with _NestedHostMixin
 
   @override
   Widget build(BuildContext context) {
-    final scope = _scopeOf(context, 'NestedNavigator',
-        () => widget.initialState ?? [if (widget.initialRoute case final route?) route.page()]);
+    final scope = _scopeOf(context, 'NestedNavigator', _normalize);
     final children = scope.page.children;
     if (children == null || children.isEmpty) return widget.builder(context, const SizedBox.shrink());
 
@@ -59,6 +59,12 @@ class _NestedNavigatorState extends State<NestedNavigator> with _NestedHostMixin
       ),
     );
   }
+
+  NavigationState _normalize(NavigationState stack) {
+    if (stack.isNotEmpty) return stack;
+    final initial = widget.initialState ?? [if (widget.initialRoute case final route?) route.page()];
+    return initial.isEmpty ? stack : _withQuery(initial);
+  }
 }
 
 typedef NestedTabsBuilder = Widget Function(
@@ -71,7 +77,8 @@ typedef NestedTabsBuilder = Widget Function(
 /// Shows the nested stack of the enclosing page as tabs, one [Navigator] per tab.
 ///
 /// The first page of the nested stack selects the tab. When the nested stack is empty, the widget
-/// sets it to [initialState] or to a page of [initialTab], or of the first tab.
+/// sets it to [initialState] or to a page of [initialTab], or of the first tab. When the first page
+/// is not a tab, the widget adds that same tab page below it.
 ///
 /// Visited tabs stay mounted in an [IndexedStack], so their pages keep widget state such as
 /// scroll positions and form input.
@@ -122,11 +129,17 @@ class _NestedTabsNavigatorState extends State<NestedTabsNavigator> with _NestedH
   @override
   NavigatorState? get navigator => _navigatorKeys[_activeIndex]?.currentState;
 
+  /// Index of the tab of [NestedTabsNavigator.initialState] or [NestedTabsNavigator.initialTab], or 0.
+  int get _initialIndex {
+    final tab = widget.initialState?.first.route ?? widget.initialTab;
+    final index = tab == null ? -1 : widget.tabs.indexOf(tab);
+    return index < 0 ? 0 : index;
+  }
+
   @override
   void initState() {
     super.initState();
-    final initialTab = widget.initialState?.first.route ?? widget.initialTab;
-    _activeIndex = initialTab == null ? 0 : widget.tabs.indexOf(initialTab).clamp(0, widget.tabs.length - 1);
+    _activeIndex = _initialIndex;
   }
 
   void _onTabPressed(int index) {
@@ -136,23 +149,34 @@ class _NestedTabsNavigatorState extends State<NestedTabsNavigator> with _NestedH
     final NavigationState next;
     if (index == _activeIndex) {
       if (!widget.clearStackOnDoubleTap) return;
-      next = [widget.tabs[index].page()];
+      next = _withQuery([widget.tabs[index].page()]);
     } else {
       if (!widget.cacheTabState) _stacks.remove(_activeIndex);
-      next = _stacks[index] ?? [widget.tabs[index].page()];
+      final cached = _stacks[index];
+      next = cached == null ? _withQuery([widget.tabs[index].page()]) : _withQuery(cached, replace: true);
     }
     delegate.change((pages) => pages.updateAt(path, (_) => next));
   }
 
+  /// An empty stack gets the initial stack. A stack that does not start with a tab gets the
+  /// initial tab below it, so that a tab is always selected.
+  NavigationState _normalize(NavigationState stack) {
+    if (stack.isEmpty) return _withQuery(widget.initialState ?? [widget.tabs[_initialIndex].page()]);
+    if (widget.tabs.contains(stack.first.route)) return stack;
+    return [
+      ..._withQuery([widget.tabs[_initialIndex].page()]),
+      ...stack
+    ];
+  }
+
   @override
   Widget build(BuildContext context) {
-    final scope =
-        _scopeOf(context, 'NestedTabsNavigator', () => widget.initialState ?? [widget.tabs[_activeIndex].page()]);
+    final scope = _scopeOf(context, 'NestedTabsNavigator', _normalize);
     final children = scope.page.children ?? const <HelmPage>[];
-    if (children.isNotEmpty) {
-      final index = widget.tabs.indexOf(children.first.route);
-      if (index >= 0) _activeIndex = index;
-      _stacks[_activeIndex] = children;
+    final index = children.isEmpty ? -1 : widget.tabs.indexOf(children.first.route);
+    if (index >= 0) {
+      _activeIndex = index;
+      _stacks[index] = children;
     }
 
     final transitionDelegate = widget.transitionDelegate ?? delegate.transitionDelegate;
@@ -183,7 +207,7 @@ class _NestedTabsNavigatorState extends State<NestedTabsNavigator> with _NestedH
 /// empty nested stack.
 mixin _NestedHostMixin<T extends StatefulWidget> on State<T> implements NestedHost {
   HelmRouterDelegate? _delegate;
-  bool _fillScheduled = false;
+  bool _normalizeScheduled = false;
 
   HelmRouterDelegate get delegate => _delegate!;
 
@@ -206,26 +230,44 @@ mixin _NestedHostMixin<T extends StatefulWidget> on State<T> implements NestedHo
     super.dispose();
   }
 
-  /// Reads the enclosing page. When its nested stack is empty, sets it to [initialStack] after
-  /// this frame. [Router.neglect] makes the URL update replace the current history entry.
-  HelmPageScope _scopeOf(BuildContext context, String widgetName, NavigationState Function() initialStack) {
+  /// Reads the enclosing page. When its nested stack is null, or [normalize] changes it, for example
+  /// to fill an empty stack, sets the result after this frame. [normalize] returns the same list
+  /// when the stack is valid. [Router.neglect] makes the URL update replace the current history entry.
+  HelmPageScope _scopeOf(
+    BuildContext context,
+    String widgetName,
+    NavigationState Function(NavigationState stack) normalize,
+  ) {
     final scope = HelmPageScope.maybeOf(context);
     if (scope == null) throw FlutterError('$widgetName must be inside a page built by Helm.');
     stackPath = scope.childrenPath;
 
-    final isEmpty = scope.page.children?.isEmpty ?? true;
-    if (isEmpty && stackPath != null && !_fillScheduled) {
-      _fillScheduled = true;
+    // A null stack becomes a list too: it marks the page as a host, so a push goes into it.
+    final stack = scope.page.children;
+    if (stackPath != null && !_normalizeScheduled && (stack == null || !identical(normalize(stack), stack))) {
+      _normalizeScheduled = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        _fillScheduled = false;
+        _normalizeScheduled = false;
         final path = stackPath;
         if (!mounted || path == null) return;
         Router.neglect(
-          context,
-          () => delegate.change((pages) => pages.updateAt(path, (stack) => stack.isEmpty ? initialStack() : stack)),
-        );
+            context, () => delegate.change((pages) => pages.updateAt(path, (stack) => [...normalize(stack)])));
       });
     }
     return scope;
+  }
+
+  /// Sets the current query params on the pages of [stack]. Query params are URL state that all
+  /// pages share, so a page that the widget creates or takes from its cache gets them too.
+  ///
+  /// New pages keep their own query params. With [replace], the pages get only the current query
+  /// params, so a cached page drops a key that was removed while it was not shown.
+  NavigationState _withQuery(NavigationState stack, {bool replace = false}) {
+    final query = delegate.currentQueryParams;
+    if (query.isEmpty && !replace) return stack;
+    return stack.mapPages((page) {
+      final next = replace ? query : {...page.queryParams, ...query};
+      return mapEquals(next, page.queryParams) ? page : page.copyWith(queryParams: next);
+    });
   }
 }
