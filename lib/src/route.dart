@@ -13,6 +13,13 @@ mixin Routable {
 
   TransitionDelegate<Object?>? get transitionDelegate => null;
 
+  /// Builds the Flutter page of [page], for example for a custom transition. Return null to use [pageType].
+  ///
+  /// Give the page [key], [HelmPage.name] as `name`, and [page] as `arguments`, so Helm can match it to its state.
+  /// [child] is the route content. A page can update without a new route, so the route should read its content from
+  /// the current `settings`, not from a closure.
+  Page<Object?>? buildPage(LocalKey key, HelmPage page, Widget child) => null;
+
   Widget builder(Map<String, String> pathParams, Map<String, String> queryParams);
 
   /// Creates a page of this route.

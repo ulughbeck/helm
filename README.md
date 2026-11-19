@@ -137,6 +137,7 @@ mixin Routable {
   String get path; // Must start with '/'
   PageType get pageType; // material, cupertino, dialog, bottomSheet
   TransitionDelegate<Object?>? get transitionDelegate; // optional per-route transition
+  Page<Object?>? buildPage(LocalKey key, HelmPage page, Widget child); // optional custom page
   Widget builder(Map<String, String> pathParams, Map<String, String> queryParams);
 }
 ```
@@ -556,6 +557,37 @@ enum Routes with Routable {
 ```
 
 The example app has `NoAnimationTransitionDelegate`. To change the animation of all pages, use `ThemeData.pageTransitionsTheme`.
+
+A transition delegate decides only whether a page change animates. To change how one route animates, return your own `Page` from `buildPage`. Return null to use `pageType`:
+
+```dart
+enum Routes with Routable {
+  home,
+  settings;
+
+  @override
+  Page<Object?>? buildPage(LocalKey key, HelmPage page, Widget child) => switch (this) {
+        Routes.settings => FadePage(key: key, name: page.name, arguments: page, child: child),
+        _ => null,
+      };
+}
+
+class FadePage extends Page<Object?> {
+  const FadePage({required this.child, super.key, super.name, super.arguments});
+
+  final Widget child;
+
+  // The builder reads the current settings, so an updated page shows its new child.
+  @override
+  Route<Object?> createRoute(BuildContext context) => PageRouteBuilder<Object?>(
+        settings: this,
+        pageBuilder: (context, animation, _) => FadeTransition(
+          opacity: animation,
+          child: (ModalRoute.of(context)!.settings as FadePage).child,
+        ),
+      );
+}
+```
 
 ## Logging
 

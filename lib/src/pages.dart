@@ -1,8 +1,8 @@
 // Internal: converts the navigation state into Flutter pages. Not exported.
 
-import 'package:flutter/cupertino.dart';
+import 'package:cupertino_ui/cupertino_ui.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import 'delegate.dart';
 import 'route.dart';
@@ -78,7 +78,8 @@ Page<Object?> _flutterPage(HelmPage page, LocalKey key, StackPath? childrenPath)
     childrenPath: childrenPath,
     child: page.route.builder(page.pathParams, page.queryParams),
   );
-  final result = switch (page.route.pageType) {
+  final result = page.route.buildPage(key, page, child) ??
+      switch (page.route.pageType) {
     PageType.material => MaterialPage<Object?>(key: key, name: page.name, arguments: page, child: child),
     PageType.cupertino => CupertinoPage<Object?>(key: key, name: page.name, arguments: page, child: child),
     PageType.dialog => _DialogPage(key: key, name: page.name, arguments: page, child: child),
