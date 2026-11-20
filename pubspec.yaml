@@ -20,14 +20,17 @@ platforms:
   web:
   windows:
 
-version: 0.0.2
+version: 0.0.3
 
 environment:
-  sdk: ^3.6.2
+  sdk: ^3.13.0
+  flutter: ">=3.47.0"
 
 dependencies:
+  cupertino_ui: ^1.1.7
   flutter:
     sdk: flutter
+  material_ui: ^1.11.1
 
 dev_dependencies: 
   flutter_test:
